@@ -18,7 +18,9 @@ eval_pedigree_ll(
   n_threads = 1L,
   cluster_weights = NULL,
   standardized = FALSE,
-  method = 0L
+  method = 0L,
+  use_tilting = FALSE,
+  vls_scales = NULL
 )
 
 eval_pedigree_grad(
@@ -34,14 +36,20 @@ eval_pedigree_grad(
   n_threads = 1L,
   cluster_weights = NULL,
   standardized = FALSE,
-  method = 0L
+  method = 0L,
+  use_tilting = FALSE,
+  vls_scales = NULL
 )
 }
 \arguments{
-\item{ptr}{object from \code{\link{pedigree_ll_terms}}.}
+\item{ptr}{object from \code{\link{pedigree_ll_terms}} or
+\code{\link{pedigree_ll_terms_loadings}}.}
 
-\item{par}{numeric vector with fixed effect coefficients and log scale
-parameters. The log scale parameters should be last.}
+\item{par}{numeric vector with parameters. For an object from
+\code{\link{pedigree_ll_terms}} these are the fixed effect coefficients and
+log scale parameters. The log scale parameters should be last. For an object
+from \code{\link{pedigree_ll_terms_loadings}} these are the fixed effects
+and the coefficients for scale parameters.}
 
 \item{maxvls}{maximum number of samples in the approximation for each
 marginal likelihood term.}
@@ -76,6 +84,15 @@ at \code{vignette("pedmod", package = "pedmod")}.}
 
 \item{method}{integer with the method to use. Zero yields randomized Korobov
 lattice rules while one yields scrambled Sobol sequences.}
+
+\item{use_tilting}{\code{TRUE} if the minimax tilting method suggested
+by Botev (2017). See \doi{10.1111/rssb.12162}.}
+
+\item{vls_scales}{can be a numeric vector with a positive scalar for each
+cluster. Then \code{vls_scales[i] * minvls} and
+\code{vls_scales[i] * maxvls} is used for cluster \code{i} rather than
+\code{minvls} and \code{maxvls}. Set \code{vls_scales = NULL} if the latter
+should be used.}
 }
 \value{
 \code{eval_pedigree_ll}:
@@ -174,5 +191,29 @@ system.time(deriv_dum <- eval_pedigree_grad(
   ptr = dum_ptr, par = c(beta, log(scs)), abs_eps = -1, maxvls = 1e6,
   rel_eps = 1e-3, minvls = 2000, use_aprx = TRUE))
 all.equal(deriv_dum, deriv_w_weight, tolerance = 1e-3)
+
+# with loadings
+dat_arg_loadings <- lapply(fam_dat, function(x){
+  list(y = as.numeric(x$y), X = x$X, Z = x$X[, 1:2],
+       scale_mats = list(x$rel_mat, x$met_mat))
+})
+
+ptr_loadings <-
+  pedigree_ll_terms_loadings(dat_arg_loadings, max_threads = 1L)
+
+scs <- c(log(0.5) / 2, 0.1, log(0.33) / 2, 0.2) # got more scales parameters
+eval_pedigree_ll(
+  ptr = ptr_loadings, par = c(beta, scs), abs_eps = -1, maxvls = 1e4,
+  rel_eps = 1e-3, minvls = 2000, use_aprx = TRUE)
+eval_pedigree_grad(
+  ptr = ptr_loadings, par = c(beta, scs), abs_eps = -1, maxvls = 1e4,
+  rel_eps = 1e-3, minvls = 2000, use_aprx = TRUE)
+
+# can recover the result from before
+scs <- c(log(0.5) / 2, 0, log(0.33) / 2, 0)
+ll3 <- eval_pedigree_ll(
+  ptr = ptr_loadings, par = c(beta, scs), abs_eps = -1, maxvls = 1e4,
+  rel_eps = 1e-3, minvls = 2000, use_aprx = TRUE)
+all.equal(ll1, ll3, tolerance = 1e-5)
 
 }

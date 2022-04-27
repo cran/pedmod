@@ -1,11 +1,29 @@
+get_n_scales <- function(ptr){
+  if(inherits(ptr, "pedigree_ll_terms_ptr")){
+    .get_n_scales(ptr)
+  } else if(inherits(ptr, "pedigree_ll_terms_loadings_ptr")){
+    .get_n_scales_loadings(ptr)
+  } else
+    .not_supported_for(ptr)
+}
+
+get_n_terms <- function(ptr){
+  if(inherits(ptr, "pedigree_ll_terms_ptr")){
+    .get_n_terms(ptr)
+  } else if(inherits(ptr, "pedigree_ll_terms_loadings_ptr")){
+    .get_n_terms_loadings(ptr)
+  } else
+    .not_supported_for(ptr)
+}
+
 #' Optimize the Log Marginal Likelihood
 #'
 #' Optimizes \code{\link{eval_pedigree_ll}} and \code{\link{eval_pedigree_grad}}
 #' using a passed optimization function.
 #'
-#' \code{pedmod_start} yields starting values which can be used for
-#' \code{pedmod_opt}. The method is based on a heuristic where we make the
-#' assumption that the fixed effects are unrelated to the random effects.
+#' \code{pedmod_start} and \code{pedmod_start_loadings}
+#' yield starting values which can be used for
+#' \code{pedmod_opt}. The methods are based on a heuristics.
 #'
 #' @inheritParams eval_pedigree_ll
 #' @param par starting values passed to \code{opt_func}.
@@ -101,10 +119,12 @@ pedmod_opt <- function(ptr, par, maxvls, abs_eps, rel_eps,
                        opt_func = NULL, seed = 1L, indices = NULL, minvls = -1L,
                        do_reorder = TRUE, use_aprx = FALSE, n_threads = 1L,
                        cluster_weights = NULL, fix = NULL, standardized = FALSE,
-                       method = 0L, ...){
+                       method = 0L, use_tilting = FALSE, vls_scales = NULL,
+                       ...){
   # checks
   stopifnot(!missing(ptr), !missing(par), !missing(maxvls), !missing(abs_eps),
-            !missing(rel_eps))
+            !missing(rel_eps),
+            .is_implemented_ptr(ptr))
 
   # handle defaults
   if(is.null(opt_func)){
@@ -138,7 +158,7 @@ pedmod_opt <- function(ptr, par, maxvls, abs_eps, rel_eps,
         indices = indices, minvls = minvls, abs_eps = abs_eps,
         do_reorder = do_reorder, use_aprx = use_aprx, n_threads = n_threads,
         cluster_weights = cluster_weights, standardized = standardized,
-        method = method),
+        method = method, use_tilting = use_tilting, vls_scales = vls_scales),
       silent = TRUE)
     if(inherits(out, "try-error"))
       return(NA_real_)
@@ -154,7 +174,8 @@ pedmod_opt <- function(ptr, par, maxvls, abs_eps, rel_eps,
                           use_aprx = use_aprx, n_threads = n_threads,
                           cluster_weights = cluster_weights,
                           standardized = standardized,
-                          method = method)
+                          method = method, use_tilting = use_tilting,
+                          vls_scales = vls_scales)
     if(length(fix) > 0)
       out <- out[-fix]
     out
@@ -165,8 +186,9 @@ pedmod_opt <- function(ptr, par, maxvls, abs_eps, rel_eps,
 }
 
 #' @rdname pedmod_opt
+#'
 #' @param data the \code{\link{list}} that was passed to
-#' \code{\link{pedigree_ll_terms}}.
+#' \code{\link{pedigree_ll_terms}} or \code{\link{pedigree_ll_terms_loadings}}.
 #' @param scale_max the maximum value for the scale parameters. Sometimes, the
 #' optimization method tends to find large scale parameters and get stuck.
 #' Setting a maximum solves this.
@@ -189,11 +211,14 @@ pedmod_start <- function(ptr, data, maxvls = 1000L, abs_eps = 0, rel_eps = 1e-2,
                          minvls = 100L, do_reorder = TRUE, use_aprx = TRUE,
                          n_threads = 1L, cluster_weights = NULL,
                          standardized = FALSE, method = 0L,
-                         sc_start = NULL){
+                         sc_start = NULL, use_tilting = FALSE,
+                         vls_scales = NULL){
   # checks
   stopifnot(is.numeric(scale_max), length(scale_max) == 1L,
             scale_max > 0,
             is.numeric(seed), length(seed) %in% 0:1)
+  if(!inherits(ptr, "pedigree_ll_terms_ptr"))
+    .not_supported_for(ptr)
 
   #####
   # get the starting values for the fixed effects
@@ -268,7 +293,8 @@ pedmod_start <- function(ptr, data, maxvls = 1000L, abs_eps = 0, rel_eps = 1e-2,
         rel_eps = rel_eps, minvls = minvls, use_aprx = use_aprx,
         n_threads = n_threads, cluster_weights = cluster_weights,
         indices = indices, do_reorder = do_reorder,
-        standardized = standardized, method = method),
+        standardized = standardized, method = method,
+        use_tilting = use_tilting, vls_scales = vls_scales),
         silent = TRUE)
       if(inherits(out, "try-error"))
         return(NA_real_)
@@ -284,7 +310,8 @@ pedmod_start <- function(ptr, data, maxvls = 1000L, abs_eps = 0, rel_eps = 1e-2,
         rel_eps = rel_eps, minvls = minvls, use_aprx = use_aprx,
         n_threads = n_threads, cluster_weights = cluster_weights,
         indices = indices, do_reorder = do_reorder,
-        standardized = standardized, method = method)
+        standardized = standardized, method = method,
+        use_tilting = use_tilting, vls_scales = vls_scales)
 
       tail(out, -length(beta))
     }
@@ -320,7 +347,8 @@ pedmod_start <- function(ptr, data, maxvls = 1000L, abs_eps = 0, rel_eps = 1e-2,
       ptr = ptr, par = c(beta_scaled, sc), maxvls = maxvls, abs_eps = abs_eps,
       rel_eps = rel_eps, minvls = minvls, use_aprx = use_aprx,
       n_threads = n_threads, cluster_weights = cluster_weights,
-      indices = indices, do_reorder = do_reorder, method = method),
+      indices = indices, do_reorder = do_reorder, method = method,
+      use_tilting = use_tilting, vls_scales = vls_scales),
       silent = TRUE)
     if(inherits(out, "try-error"))
       return(NA_real_)
@@ -337,7 +365,8 @@ pedmod_start <- function(ptr, data, maxvls = 1000L, abs_eps = 0, rel_eps = 1e-2,
       ptr = ptr, par = c(beta_scaled, sc), maxvls = maxvls, abs_eps = abs_eps,
       rel_eps = rel_eps, minvls = minvls, use_aprx = use_aprx,
       n_threads = n_threads, cluster_weights = cluster_weights,
-      indices = indices, do_reorder = do_reorder, method = method)
+      indices = indices, do_reorder = do_reorder, method = method,
+      use_tilting = use_tilting, vls_scales = vls_scales)
 
     sum_d_beta <- sum(beta * out[seq_along(beta)])
     sum_d_beta * exp(sc) / (2 * fac) + tail(out, -length(beta))
@@ -360,10 +389,77 @@ pedmod_start <- function(ptr, data, maxvls = 1000L, abs_eps = 0, rel_eps = 1e-2,
 
   }
 
-  # return
   list(par = c(beta_scaled, sc), beta_no_rng = beta,
        logLik_no_rng = logLik_no_rng,
        logLik_est = logLik_est, opt = res$opt)
+}
+
+#' @rdname pedmod_opt
+#'
+#' @param sc_start_invariant scale parameter(s) like sc_start. It is the value
+#' that all individuals should have (i.e. not one that varies by individual).
+#'
+#' @return
+#' \code{pedmod_start_loadings}: A \code{list} with:
+#' \itemize{
+#'  \item par: the starting value.
+#'  \item beta_no_rng: the fixed effects MLEs without random effects.
+#'  \item logLik_no_rng: the log maximum likelihood without random effects.
+#' }
+#'
+#' @importFrom stats lm.fit
+#' @export
+pedmod_start_loadings <- function(
+  ptr, data, indices = NULL, cluster_weights = NULL,
+  sc_start_invariant = NULL){
+  # checks
+  if(!inherits(ptr, "pedigree_ll_terms_loadings_ptr"))
+    .not_supported_for(ptr)
+
+  #####
+  # get the starting values for the fixed effects
+  y <- unlist(lapply(data, `[[`, "y"))
+  X <- do.call(rbind, lapply(data, `[[`, "X"))
+  Z <- do.call(rbind, lapply(data, `[[`, "Z"))
+  if(!is.null(cluster_weights))
+    w <- unlist(Map(
+      rep, cluster_weights,
+      times = sapply(data, function(x) length(x$y))))
+  else
+    w <- rep(1, length(y))
+
+  # checks
+  n <- length(y)
+  stopifnot(
+    length(y) > 0, is.numeric(y),
+    NROW(X) == n, NROW(Z) == n,
+    is.null(cluster_weights) || (
+      length(cluster_weights) == length(data) &&
+        is.numeric(cluster_weights)))
+
+  # fit the model without random effects
+  start_fit <-  glm.fit(X, y, weights = w, family = binomial("probit"))
+  beta <- start_fit$coefficients
+  logLik_no_rng <- -sum(start_fit$deviance) / 2
+
+  # find the linear combination which yields an intercept
+  n_scales <- get_n_scales(ptr)
+  n_scales_mats <- n_scales %/% NCOL(Z)
+
+  if(is.null(sc_start_invariant))
+    sc_start_invariant <- .5^2
+  if(length(sc_start_invariant) == 1)
+    sc_start_invariant <- rep(sc_start_invariant, n_scales_mats)
+
+  stopifnot(is.numeric(sc_start_invariant), all(sc_start_invariant > 0),
+            length(sc_start_invariant) == n_scales_mats)
+
+  fit_slope <- lm.fit(Z, rep(1, NROW(Z)))$coef
+  thetas <- fit_slope %o% log(sc_start_invariant) / 2
+  beta_scaled <- beta * sqrt(1 + sum(sc_start_invariant))
+
+  list(par = c(beta_scaled, thetas),
+       beta_no_rng = beta, logLik_no_rng = logLik_no_rng)
 }
 
 #' Optimize the Log Marginal Likelihood Using a Stochastic Quasi-Newton Method
@@ -372,6 +468,7 @@ pedmod_start <- function(ptr, data, maxvls = 1000L, abs_eps = 0, rel_eps = 1e-2,
 #' using a stochastic quasi-Newton method.
 #'
 #' @inheritParams pedmod_opt
+#' @param ptr object from \code{\link{pedigree_ll_terms}}.
 #' @param par starting values.
 #' @param step_factor factor used for the step size. The step size is
 #' \code{step_factor} divided by the iteration number.
@@ -502,10 +599,13 @@ pedmod_sqn <- function(ptr, par, maxvls, abs_eps, rel_eps, step_factor,
                        fix = NULL, standardized = FALSE, minvls_hess = minvls,
                        maxvls_hess = maxvls, abs_eps_hess = abs_eps,
                        rel_eps_hess = rel_eps, verbose = FALSE,
-                       method = 0L, check_every = 2L * n_grad_steps){
+                       method = 0L, check_every = 2L * n_grad_steps,
+                       use_tilting = FALSE, vls_scales = NULL){
   # checks
   stopifnot(!missing(ptr), !missing(par), !missing(maxvls), !missing(abs_eps),
             !missing(rel_eps))
+  if(!inherits(ptr, "pedigree_ll_terms_ptr"))
+    .not_supported_for(ptr)
 
   #####
   # setup before the estimation
@@ -542,7 +642,7 @@ pedmod_sqn <- function(ptr, par, maxvls, abs_eps, rel_eps, step_factor,
       indices = indices, minvls = minvls, abs_eps = abs_eps,
       do_reorder = do_reorder, use_aprx = use_aprx, n_threads = n_threads,
       cluster_weights = cluster_weights, standardized = standardized,
-      method = method),
+      method = method, use_tilting = use_tilting, vls_scales = vls_scales),
       silent = TRUE)
     if(inherits(out, "try-error"))
       return(NA_real_)
@@ -559,7 +659,8 @@ pedmod_sqn <- function(ptr, par, maxvls, abs_eps, rel_eps, step_factor,
                           abs_eps = abs_eps, do_reorder = do_reorder,
                           use_aprx = use_aprx, n_threads = n_threads,
                           cluster_weights = cluster_weights,
-                          standardized = standardized, method = method)
+                          standardized = standardized, method = method,
+                          use_tilting = use_tilting, vls_scales = vls_scales)
     if(any_fixed)
       out <- out[-fix]
     if(!is.null(indices))
@@ -715,6 +816,7 @@ pedmod_sqn <- function(ptr, par, maxvls, abs_eps, rel_eps, step_factor,
 #'
 #' @inheritParams pedmod_opt
 #'
+#' @param ptr object from \code{\link{pedigree_ll_terms}}.
 #' @param par numeric vector with the maximum likelihood estimator e.g. from
 #' \code{\link{pedmod_opt}}.
 #' @param delta numeric scalar with an initial step to take. Subsequent steps
@@ -830,7 +932,8 @@ pedmod_profile <- function(ptr, par, delta, maxvls, minvls = -1L,
                            do_reorder = TRUE, use_aprx = FALSE, n_threads = 1L,
                            cluster_weights = NULL, method = 0L, seed = 1L,
                            verbose = FALSE, max_step = 15L,
-                           standardized = FALSE, ...){
+                           standardized = FALSE, use_tilting = FALSE,
+                           vls_scales = NULL, ...){
   # checks
   stopifnot(
     !missing(ptr), !missing(par), !missing(maxvls), !missing(abs_eps),
@@ -841,6 +944,8 @@ pedmod_profile <- function(ptr, par, delta, maxvls, minvls = -1L,
     is.numeric(delta), is.finite(delta), delta > 0,
     is.numeric(alpha), length(alpha) == 1, is.finite(alpha),
     alpha > 0, alpha < 1)
+  if(!inherits(ptr, "pedigree_ll_terms_ptr"))
+    .not_supported_for(ptr)
 
   # assign function to evaluate the log likelihood
   fn <- function(par, minv = minvls){
@@ -849,7 +954,8 @@ pedmod_profile <- function(ptr, par, delta, maxvls, minvls = -1L,
                      rel_eps = rel_eps, indices = indices, minvls = minv,
                      do_reorder = do_reorder, use_aprx = use_aprx,
                      n_threads = n_threads, cluster_weights = cluster_weights,
-                     standardized = standardized, method = method)
+                     standardized = standardized, method = method,
+                     use_tilting = use_tilting, vls_scales = vls_scales)
   }
   optim_res <- list(par = par[-which_prof], value = -fn(par))
 
@@ -1015,6 +1121,8 @@ pedmod_profile <- function(ptr, par, delta, maxvls, minvls = -1L,
 #' proportion of variance for one of the effects.
 #'
 #' @inheritParams pedmod_profile
+#'
+#' @param ptr object from \code{\link{pedigree_ll_terms}}.
 #' @param which_prof the index of the random effect which proportion of
 #' variance should be profiled.
 #' @param opt_func function to perform minimization with arguments like
@@ -1133,7 +1241,7 @@ pedmod_profile_prop <- function(
   minvls_start = if(minvls < 0) minvls else minvls / 5,
   do_reorder = TRUE, use_aprx = FALSE, n_threads = 1L, cluster_weights = NULL,
   method = 0L, seed = 1L, verbose = FALSE, max_step = 15L,
-  opt_func = NULL, ...){
+  opt_func = NULL, use_tilting = FALSE, vls_scales = NULL, ...){
   # checks
   standardized <- FALSE
   n_scales <- get_n_scales(ptr)
@@ -1147,6 +1255,8 @@ pedmod_profile_prop <- function(
     alpha > 0, alpha < 1)
   if(n_scales < 2)
     stop("pedmod_profile when there is just one scale parameter")
+  if(!inherits(ptr, "pedigree_ll_terms_ptr"))
+    .not_supported_for(ptr)
 
   # assign function to evaluate the log likelihood
   fn <- function(par, minv = minvls){
@@ -1155,7 +1265,8 @@ pedmod_profile_prop <- function(
                      rel_eps = rel_eps, indices = indices, minvls = minv,
                      do_reorder = do_reorder, use_aprx = use_aprx,
                      n_threads = n_threads, cluster_weights = cluster_weights,
-                     method = method)
+                     method = method, use_tilting = use_tilting,
+                     vls_scales = vls_scales)
   }
   optim_res <- list(par = par, value = -fn(par))
 
@@ -1231,7 +1342,7 @@ pedmod_profile_prop <- function(
         indices = indices, minvls = minvls, abs_eps = abs_eps,
         do_reorder = do_reorder, use_aprx = use_aprx, n_threads = n_threads,
         cluster_weights = cluster_weights, standardized = standardized,
-        method = method),
+        method = method, use_tilting = use_tilting, vls_scales = vls_scales),
         silent = TRUE)
       if(inherits(out, "try-error"))
         return(NA_real_)
@@ -1246,7 +1357,7 @@ pedmod_profile_prop <- function(
         indices = indices, minvls = minvls, abs_eps = abs_eps,
         do_reorder = do_reorder, use_aprx = use_aprx, n_threads = n_threads,
         cluster_weights = cluster_weights, standardized = standardized,
-        method = method),
+        method = method, use_tilting = use_tilting, vls_scales = vls_scales),
         silent = TRUE)
       if(inherits(out, "try-error"))
         return(rep(NA_real_, length(par_vec) - 1L))

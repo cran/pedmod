@@ -27,6 +27,8 @@
 //' More samples yields a better estimate of the error but a worse
 //' approximation. Eight is used in the original Fortran code. If one is
 //' used then the error will be set to zero because it cannot be estimated.
+//' @param use_tilting \code{TRUE} if the minimax tilting method suggested
+//' by Botev (2017). See \doi{10.1111/rssb.12162}.
 //'
 //' @return
 //' An approximation of the CDF. The \code{"n_it"} attribute shows the number of
@@ -42,20 +44,39 @@
 //' u <- rnorm(n)
 //'
 //' system.time(pedmod_res <- mvndst(
-//'   lower = rep(-Inf, n), upper = u, sigma = S, mu = numeric(n),
-//'   maxvls = 1e6, abs_eps = 0, rel_eps = 1e-4, use_aprx = TRUE))
+//'     lower = rep(-Inf, n), upper = u, sigma = S, mu = numeric(n),
+//'     maxvls = 1e6, abs_eps = 0, rel_eps = 1e-4, use_aprx = TRUE))
 //' pedmod_res
 //'
 //' # compare with mvtnorm
 //' if(require(mvtnorm)){
-//'   mvtnorm_time <- system.time(mvtnorm_res <- pmvnorm(
-//'     upper = u, sigma = S, algorithm = GenzBretz(
-//'       maxpts = 1e6, abseps = 0, releps = 1e-4)))
-//'   cat("mvtnorm_res:\n")
-//'   print(mvtnorm_res)
+//'     mvtnorm_time <- system.time(mvtnorm_res <- mvtnorm::pmvnorm(
+//'         upper = u, sigma = S, algorithm = GenzBretz(
+//'             maxpts = 1e6, abseps = 0, releps = 1e-4)))
+//'     cat("mvtnorm_res:\n")
+//'     print(mvtnorm_res)
 //'
-//'   cat("mvtnorm_time:\n")
-//'   print(mvtnorm_time)
+//'     cat("mvtnorm_time:\n")
+//'     print(mvtnorm_time)
+//' }
+//'
+//' # with titling
+//' system.time(pedmod_res <- mvndst(
+//'     lower = rep(-Inf, n), upper = u, sigma = S, mu = numeric(n),
+//'     maxvls = 1e6, abs_eps = 0, rel_eps = 1e-4, use_tilting = TRUE))
+//' pedmod_res
+//'
+//' # compare with TruncatedNormal
+//' if(require(TruncatedNormal)){
+//'     TruncatedNormal_time <- system.time(
+//'         TruncatedNormal_res <- TruncatedNormal::pmvnorm(
+//'             lb = rep(-Inf, n), ub = u, sigma = S,
+//'             B = attr(pedmod_res, "n_it"), type = "qmc"))
+//'     cat("TruncatedNormal_res:\n")
+//'     print(TruncatedNormal_res)
+//'
+//'     cat("TruncatedNormal_time:\n")
+//'     print(TruncatedNormal_time)
 //' }
 //'
 //' @export
@@ -66,7 +87,7 @@ Rcpp::NumericVector mvndst
    double const abs_eps = .001, double const rel_eps = 0,
    int minvls = -1, bool const do_reorder = true,
    bool const use_aprx = false, int const method = 0,
-   unsigned const n_sequences = 8){
+   unsigned const n_sequences = 8, bool const use_tilting = false){
   arma::uword const n = lower.n_elem;
   if(upper.n_elem != n)
     throw std::invalid_argument("mvndst: invalid upper");
@@ -89,7 +110,8 @@ Rcpp::NumericVector mvndst
   pedmod::cdf<pedmod::likelihood>::alloc_mem(lower.n_elem, 1);
   pedmod::likelihood::alloc_mem(lower.n_elem, 1, n_sequences);
   auto const out = pedmod::cdf<pedmod::likelihood>(
-    func, lower, upper, mu, sigma, do_reorder, use_aprx).approximate(
+    func, lower, upper, mu, sigma, do_reorder, use_aprx,
+    use_tilting).approximate(
         maxvls, abs_eps, rel_eps, pedmod::get_cdf_methods(method), minvls,
         n_sequences);
 
@@ -102,6 +124,44 @@ Rcpp::NumericVector mvndst
 }
 
 namespace {
+
+arma::vec check_n_get_vls_scales
+  (Rcpp::Nullable<Rcpp::NumericVector> vls_scales, size_t const n_terms,
+   unsigned const maxvls){
+  if(vls_scales.isNotNull()){
+    Rcpp::NumericVector r_weights(vls_scales);
+    if(static_cast<size_t>(r_weights.size()) != n_terms)
+      throw std::invalid_argument(
+          "invalid size of vls_scales. Should have length " +
+            std::to_string(n_terms) +  " had length " +
+            std::to_string(r_weights.size()) + ".");
+
+    arma::vec out = r_weights;
+    std::for_each(out.begin(), out.end(), [&](double const x){
+      if(x * maxvls < 1)
+        throw std::runtime_error("vls_scales[i] * maxvls < 1");
+    });
+
+    return out;
+  }
+
+  return {};
+}
+
+arma::vec check_n_get_cluster_weights
+  (Rcpp::Nullable<Rcpp::NumericVector> cluster_weights, size_t const n_terms){
+  if(cluster_weights.isNotNull()){
+    Rcpp::NumericVector r_weights(cluster_weights);
+    if(static_cast<size_t>(r_weights.size()) != n_terms)
+      throw std::invalid_argument(
+          "invalid size of cluster_weights. Should have length " +
+            std::to_string(n_terms) +  " had length " +
+            std::to_string(r_weights.size()) + ".");
+    return r_weights;
+  }
+
+  return {};
+}
 
 struct pedigree_terms {
   unsigned const max_threads;
@@ -132,20 +192,65 @@ struct pedigree_terms {
     // checks
     if(terms.size() < 1)
       throw std::invalid_argument("pedigree_terms: no terms");
-    unsigned const n_fix = terms[0].n_fix_effect,
-                n_scales = terms[0].l_factor.scale_mats.size();
+    unsigned const n_fix = terms[0].n_fix_effect(),
+                n_scales = terms[0].n_scales();
     for(auto &tr : terms){
-      if(tr.n_fix_effect != n_fix)
+      if(tr.n_fix_effect() != n_fix)
         throw std::invalid_argument("pedigree_terms: number of fixed effects do not match");
-      if(tr.l_factor.scale_mats.size() != static_cast<size_t>(n_scales))
+      if(tr.n_scales() != static_cast<size_t>(n_scales))
         throw std::invalid_argument("pedigree_terms: number of scale matrices do not match");
     }
   }
 };
 
+struct pedigree_terms_loading {
+  unsigned const max_threads;
+  std::vector<pedmod::pedigree_ll_term_loading> terms;
+
+  pedigree_terms_loading
+    (Rcpp::List data, unsigned const max_threads, unsigned const n_sequences):
+    max_threads(std::max(1U, max_threads)) {
+    terms.reserve(data.size());
+    for(auto x : data){
+      Rcpp::List xl(static_cast<SEXP>(x)),
+             s_mats(static_cast<SEXP>(xl["scale_mats"]));
+
+      arma::mat const X = Rcpp::as<arma::mat>(xl["X"]);
+      arma::mat const Z = Rcpp::as<arma::mat>(xl["Z"]);
+      arma::vec const y = Rcpp::as<arma::vec>(xl["y"]);
+      if(y.n_elem > 1000 or y.n_elem < 1)
+        throw std::invalid_argument(
+            "pedigree_terms_loading: Either dimension zero or dimension greater than 1000");
+
+      std::vector<arma::mat> scale_mats;
+      scale_mats.reserve(s_mats.size());
+      for(auto &s : s_mats)
+        scale_mats.emplace_back(Rcpp::as<arma::mat>(s));
+
+      terms.emplace_back(X, Z, y, scale_mats, max_threads, n_sequences);
+    }
+
+    // checks
+    if(terms.size() < 1)
+      throw std::invalid_argument("pedigree_terms_loading: no terms");
+    unsigned const n_fix = terms[0].n_fix_effect(),
+           n_scale_coefs = terms[0].n_scale_coefs(),
+                n_scales = terms[0].n_scales();
+    for(auto &tr : terms){
+      if(tr.n_fix_effect() != n_fix)
+        throw std::invalid_argument("pedigree_terms_loading: number of fixed effects do not match");
+      if(tr.n_scale_coefs() != n_scale_coefs)
+        throw std::invalid_argument("pedigree_terms_loading: number of coefficients for the scale parameters do not match");
+      if(tr.n_scales() != static_cast<size_t>(n_scales))
+        throw std::invalid_argument("pedigree_terms_loading: number of scale matrices do not match");
+    }
+  }
+};
+
+template<class TermsObj>
 Rcpp::IntegerVector get_indices
   (Rcpp::Nullable<Rcpp::IntegerVector> indices,
-   pedigree_terms const &terms){
+   TermsObj const &terms){
   if(indices.isNotNull())
     return Rcpp::IntegerVector(indices);
 
@@ -155,8 +260,9 @@ Rcpp::IntegerVector get_indices
   return out;
 }
 
-inline unsigned eval_get_n_threads(unsigned const n_threads,
-                                   pedigree_terms const &terms){
+template<class TermsObj>
+unsigned eval_get_n_threads
+  (unsigned const n_threads, TermsObj const &terms){
 #ifndef _OPENMP
   return 1L;
 #endif
@@ -182,6 +288,7 @@ inline unsigned eval_get_n_threads(unsigned const n_threads,
 //' with an:
 //' \itemize{
 //'   \item{\code{"X"}}{ element with the design matrix for the fixed effect,}
+//'   \item{\code{"Z"}}{ element with the design matrix for the loadings of the effects (only needed for \code{pedigree_ll_terms_loadings}),}
 //'   \item{\code{"y"}}{ element with the zero-one outcomes, and}
 //'   \item{\code{"scale_mats"}}{ element with a list where each element is a
 //' scale/correlation matrix for a particular type of effect.}
@@ -198,7 +305,16 @@ inline unsigned eval_get_n_threads(unsigned const n_threads,
 //' Thus, it is often important that the user adds an intercept column
 //' to these matrices as it is hardly ever justified to not include the
 //' intercept (the exceptions being e.g. when splines are used which include
-//' the intercept and with certain dummy designs).
+//' the intercept and with certain dummy designs). This equally holds for
+//' the \code{Z} matrices with \code{pedigree_ll_terms_loadings}.
+//'
+//' \code{pedigree_ll_terms_loadings} relax the assumption that the scale
+//' parameter is the same for all individuals. \code{pedigree_ll_terms_loadings}
+//' and \code{pedigree_ll_terms} yield the same model if \code{"Z"} is an
+//' intercept column for all families but with a different parameterization.
+//' In this case, \code{pedigree_ll_terms} will be
+//' faster. See \code{vignette("pedmod", "pedmod")} for examples of using
+//' \code{pedigree_ll_terms_loadings}.
 //'
 //' @examples
 //' # three families as an example
@@ -246,22 +362,43 @@ inline unsigned eval_get_n_threads(unsigned const n_threads,
 //' # get a pointer to the C++ object
 //' ptr <- pedigree_ll_terms(dat_arg, max_threads = 1L)
 //'
+//' # get the argument for a the version with loadings
+//' dat_arg_loadings <- lapply(fam_dat, function(x){
+//'   list(y = as.numeric(x$y), X = x$X, Z = x$X[, 1:2],
+//'        scale_mats = list(x$rel_mat, x$met_mat))
+//' })
+//'
+//' ptr <- pedigree_ll_terms_loadings(dat_arg_loadings, max_threads = 1L)
+//'
 //' @export
 // [[Rcpp::export]]
 SEXP pedigree_ll_terms(Rcpp::List data, unsigned const max_threads = 1,
                        unsigned const n_sequences = 8){
-  return Rcpp::XPtr<pedigree_terms>(
+  Rcpp::XPtr<pedigree_terms> out(
     new pedigree_terms(data, max_threads, n_sequences));
+  out.attr("class") = "pedigree_ll_terms_ptr";
+  return out;
 }
 
-// [[Rcpp::export]]
+// [[Rcpp::export(.get_n_scales, rng = false)]]
 int get_n_scales(SEXP ptr){
-  return Rcpp::XPtr<pedigree_terms>(ptr)->terms[0].l_factor.scale_mats.size();
+  return Rcpp::XPtr<pedigree_terms>(ptr)->terms[0].n_scales();
 }
 
-// [[Rcpp::export]]
+// [[Rcpp::export(.get_n_scales_loadings, rng = false)]]
+int get_n_scales_loadings(SEXP ptr){
+  Rcpp::XPtr<pedigree_terms_loading> obj(ptr);
+  return obj->terms[0].n_scales() * obj->terms[0].n_scale_coefs();
+}
+
+// [[Rcpp::export(.get_n_terms, rng = false)]]
 int get_n_terms(SEXP ptr){
   return Rcpp::XPtr<pedigree_terms>(ptr)->terms.size();
+}
+
+// [[Rcpp::export(.get_n_terms_loadings, rng = false)]]
+int get_n_terms_loadings(SEXP ptr){
+  return Rcpp::XPtr<pedigree_terms_loading>(ptr)->terms.size();
 }
 
 // [[Rcpp::export("eval_pedigree_ll_cpp")]]
@@ -272,7 +409,8 @@ Rcpp::NumericVector eval_pedigree_ll
    int const minvls = -1, bool const do_reorder = true,
    bool const use_aprx = false, unsigned n_threads = 1L,
    Rcpp::Nullable<Rcpp::NumericVector> cluster_weights = R_NilValue,
-   int const method = 0){
+   int const method = 0, bool const use_tilting = false,
+   Rcpp::Nullable<Rcpp::NumericVector> vls_scales = R_NilValue){
   Rcpp::XPtr<pedigree_terms> terms_ptr(ptr);
   std::vector<pedmod::pedigree_ll_term > &terms = terms_ptr->terms;
   n_threads = eval_get_n_threads(n_threads, *terms_ptr);
@@ -280,32 +418,27 @@ Rcpp::NumericVector eval_pedigree_ll
   parallelrng::set_rng_seeds(n_threads);
 
   // checks
-  int const n_fix = terms[0].n_fix_effect,
-         n_scales = terms[0].l_factor.scale_mats.size();
-  if(static_cast<int>(par.size()) != n_fix + n_scales)
+  if(static_cast<size_t>(par.size()) != terms[0].n_par())
     throw std::invalid_argument(
         "eval_pedigree_ll: invalid par argument. Had " +
           std::to_string(par.size()) + " elements but should have " +
-          std::to_string(n_fix + n_scales) + ".");
+          std::to_string(terms[0].n_par()) + ".");
 
   if(maxvls < minvls or maxvls < 1)
     throw std::invalid_argument("mvndst: invalid maxvls");
 
-  // get potential weights
-  arma::vec c_weights;
-  if(cluster_weights.isNotNull()){
-    Rcpp::NumericVector r_weights(cluster_weights);
-    if(static_cast<size_t>(r_weights.size()) != terms.size())
-      throw std::invalid_argument(
-          "invalid size of cluster_weights. Should have length " +
-            std::to_string(terms.size()) +  " had length " +
-            std::to_string(r_weights.size()) + ".");
-    c_weights = r_weights;
-  }
+  arma::vec const c_weights
+    {check_n_get_cluster_weights(cluster_weights, terms.size())};
   bool const has_weights = c_weights.size() > 0;
 
+  arma::vec const vls_scales_use
+    {check_n_get_vls_scales(vls_scales, terms.size(), maxvls)};
+  bool const has_vls_scales{vls_scales_use.size() > 0};
+
   // transform scale parameters
-  for(int i = n_fix; i < n_fix + n_scales; ++i)
+  auto const n_fix = terms[0].n_fix_effect();
+  auto const n_scales = terms[0].n_scales();
+  for(unsigned i = n_fix; i < n_fix + n_scales; ++i)
     par[i] = std::exp(par[i]);
 
   pedmod::cache_mem<double> r_mem;
@@ -339,9 +472,17 @@ Rcpp::NumericVector eval_pedigree_ll
       if(std::abs(w_i) < std::numeric_limits<double>::epsilon())
         return;
 
+      int minvls_use{minvls};
+      int maxvls_use{maxvls};
+      if(has_vls_scales){
+        if(minvls > 0)
+          minvls_use = std::max<int>(1, std::lround(minvls * vls_scales_use[i]));
+        maxvls_use = std::lround(maxvls * vls_scales_use[i]);
+      }
+
       auto const res = terms.at(idx[i]).fn(
-        &par[0], maxvls, abs_eps, rel_eps, minvls, do_reorder, use_aprx,
-        did_fail, meth);
+        &par[0], maxvls_use, abs_eps, rel_eps, minvls_use, do_reorder, use_aprx,
+        did_fail, meth, use_tilting);
 
       wmem[0] += w_i * res.log_likelihood;
       wmem[1] += w_i * w_i * res.estimator_var;
@@ -375,7 +516,8 @@ Rcpp::NumericVector eval_pedigree_grad
    int const minvls = -1, bool const do_reorder = true,
    bool const use_aprx = false, unsigned n_threads = 1L,
    Rcpp::Nullable<Rcpp::NumericVector> cluster_weights = R_NilValue,
-   int const method = 0){
+   int const method = 0, bool const use_tilting = false,
+   Rcpp::Nullable<Rcpp::NumericVector> vls_scales = R_NilValue){
   Rcpp::XPtr<pedigree_terms> terms_ptr(ptr);
   std::vector<pedmod::pedigree_ll_term > &terms = terms_ptr->terms;
   n_threads = eval_get_n_threads(n_threads, *terms_ptr);
@@ -383,28 +525,22 @@ Rcpp::NumericVector eval_pedigree_grad
   parallelrng::set_rng_seeds(n_threads);
 
   // checks
-  int const n_fix = terms[0].n_fix_effect,
-         n_scales = terms[0].l_factor.scale_mats.size();
-  if(static_cast<int>(par.size()) != n_fix + n_scales)
+  if(static_cast<size_t>(par.size()) != terms[0].n_par())
     throw std::invalid_argument(
         "eval_pedigree_grad: invalid par argument. Had " +
           std::to_string(par.size()) + " elements but should have " +
-          std::to_string(n_fix + n_scales) + ".");
+          std::to_string(terms[0].n_par()) + ".");
 
-  // get potential weights
-  arma::vec c_weights;
-  if(cluster_weights.isNotNull()){
-    Rcpp::NumericVector r_weights(cluster_weights);
-    if(static_cast<size_t>(r_weights.size()) != terms.size())
-      throw std::invalid_argument(
-          "invalid size of cluster_weights. Should have length " +
-            std::to_string(terms.size()) +  " had length " +
-            std::to_string(r_weights.size()) + ".");
-    c_weights = r_weights;
-  }
+  arma::vec const c_weights
+    {check_n_get_cluster_weights(cluster_weights, terms.size())};
   bool const has_weights = c_weights.size() > 0;
 
+  arma::vec const vls_scales_use
+    {check_n_get_vls_scales(vls_scales, terms.size(), maxvls)};
+  bool const has_vls_scales{vls_scales_use.size() > 0};
+
   // transform scale parameters
+  auto const n_fix = terms[0].n_fix_effect();
   for(unsigned i = n_fix; i < par.size(); ++i)
     par[i] = std::exp(par[i]);
 
@@ -440,9 +576,17 @@ Rcpp::NumericVector eval_pedigree_grad
       if(std::abs(w_i) < std::numeric_limits<double>::epsilon())
         return;
 
+      int minvls_use{minvls};
+      int maxvls_use{maxvls};
+      if(has_vls_scales){
+        if(minvls > 0)
+          minvls_use = std::max<int>(1, std::lround(minvls * vls_scales_use[i]));
+        maxvls_use = std::lround(maxvls * vls_scales_use[i]);
+      }
+
       *wmem += terms.at(idx[i]).gr(
-        &par[0], wmem + 1, var_est, maxvls, abs_eps, rel_eps, minvls,
-        do_reorder, use_aprx, did_fail, w_i, meth);
+        &par[0], wmem + 1, var_est, maxvls_use, abs_eps, rel_eps, minvls_use,
+        do_reorder, use_aprx, did_fail, w_i, meth, use_tilting);
       n_fails += did_fail;
     });
 #ifdef _OPENMP
@@ -452,8 +596,9 @@ Rcpp::NumericVector eval_pedigree_grad
   exception_handler.rethrow_if_error();
 
   // aggregate the result
-  Rcpp::NumericVector grad(n_fix + n_scales),
-                   std_est(n_fix + n_scales + 1);
+  auto const n_par = terms[0].n_par();
+  Rcpp::NumericVector grad(n_par),
+                   std_est(n_par + 1);
   double ll(0.);
   for(unsigned i = 0; i < n_threads; ++i){
     double *wmem = r_mem.get_mem(i);
@@ -471,8 +616,232 @@ Rcpp::NumericVector eval_pedigree_grad
     std_est[j] *= par[j - 1];
 
   // account for exp(...)
-  for(int i = n_fix; i < n_fix + n_scales; ++i)
+  for(unsigned i = n_fix; i < n_par; ++i)
     grad[i] *= par[i];
+  grad.attr("logLik")  = Rcpp::NumericVector::create(ll);
+  grad.attr("n_fails") = Rcpp::IntegerVector::create(n_fails);
+  grad.attr("std")     = std_est;
+
+  return grad;
+}
+
+//' @rdname pedigree_ll_terms
+//'
+//' @export
+// [[Rcpp::export]]
+SEXP pedigree_ll_terms_loadings
+  (Rcpp::List data, unsigned const max_threads = 1,
+   unsigned const n_sequences = 8){
+  Rcpp::XPtr<pedigree_terms_loading> out(
+    new pedigree_terms_loading(data, max_threads, n_sequences));
+
+  out.attr("class") = "pedigree_ll_terms_loadings_ptr";
+  return out;
+}
+
+// [[Rcpp::export("eval_pedigree_ll_loadings_cpp")]]
+Rcpp::NumericVector eval_pedigree_ll_loadings
+  (SEXP ptr, arma::vec par, int const maxvls,
+   double const abs_eps, double const rel_eps,
+   Rcpp::Nullable<Rcpp::IntegerVector> indices = R_NilValue,
+   int const minvls = -1, bool const do_reorder = true,
+   bool const use_aprx = false, unsigned n_threads = 1L,
+   Rcpp::Nullable<Rcpp::NumericVector> cluster_weights = R_NilValue,
+   int const method = 0, bool const use_tilting = false,
+   Rcpp::Nullable<Rcpp::NumericVector> vls_scales = R_NilValue){
+  Rcpp::XPtr<pedigree_terms_loading> terms_ptr(ptr);
+  std::vector<pedmod::pedigree_ll_term_loading> &terms = terms_ptr->terms;
+  n_threads = eval_get_n_threads(n_threads, *terms_ptr);
+
+  parallelrng::set_rng_seeds(n_threads);
+
+  // checks
+  if(static_cast<size_t>(par.size()) != terms[0].n_par())
+    throw std::invalid_argument(
+        "eval_pedigree_ll_loadings: invalid par argument. Had " +
+          std::to_string(par.size()) + " elements but should have " +
+          std::to_string(terms[0].n_par()) + ".");
+
+  if(maxvls < minvls or maxvls < 1)
+    throw std::invalid_argument("mvndst: invalid maxvls");
+
+  arma::vec const c_weights
+    {check_n_get_cluster_weights(cluster_weights, terms.size())};
+  bool const has_weights = c_weights.size() > 0;
+
+  arma::vec const vls_scales_use
+    {check_n_get_vls_scales(vls_scales, terms.size(), maxvls)};
+  bool const has_vls_scales{vls_scales_use.size() > 0};
+
+  pedmod::cache_mem<double> r_mem;
+  r_mem.set_n_mem(2, n_threads);
+
+  // compute
+  auto all_idx = get_indices(indices, *terms_ptr);
+  int const * idx = &all_idx[0];
+
+  int n_fails(0);
+  openmp_exception_ptr exception_handler;
+  pedmod::cdf_methods const meth = pedmod::get_cdf_methods(method);
+
+#ifdef _OPENMP
+#pragma omp parallel num_threads(n_threads)
+{
+#endif
+  double *wmem = r_mem.get_mem();
+  wmem[0] = 0;
+  wmem[1] = 0;
+
+#ifdef _OPENMP
+#pragma omp for schedule(static) reduction(+:n_fails)
+#endif
+  for(int i = 0; i < all_idx.size(); ++i)
+    exception_handler.run([&]() -> void {
+      if(idx[i] >= static_cast<int>(terms.size()))
+        return;
+      bool did_fail(false);
+      double const w_i = has_weights ? c_weights[idx[i]] : 1;
+      if(std::abs(w_i) < std::numeric_limits<double>::epsilon())
+        return;
+
+      int minvls_use{minvls};
+      int maxvls_use{maxvls};
+      if(has_vls_scales){
+        if(minvls > 0)
+          minvls_use = std::max<int>(1, std::lround(minvls * vls_scales_use[i]));
+        maxvls_use = std::lround(maxvls * vls_scales_use[i]);
+      }
+
+      auto const res = terms.at(idx[i]).fn(
+        &par[0], maxvls_use, abs_eps, rel_eps, minvls_use, do_reorder, use_aprx,
+        did_fail, meth, true);
+
+      wmem[0] += w_i * res.log_likelihood;
+      wmem[1] += w_i * w_i * res.estimator_var;
+      n_fails += did_fail;
+    });
+#ifdef _OPENMP
+}
+#endif
+
+  exception_handler.rethrow_if_error();
+
+  double out(0.),
+     var_est(0.);
+  for(unsigned i = 0; i < n_threads; ++i){
+    out     += r_mem.get_mem(i)[0];
+    var_est += r_mem.get_mem(i)[1];
+  }
+
+  Rcpp::NumericVector v_out = Rcpp::NumericVector::create(out);
+  v_out.attr("n_fails") = Rcpp::IntegerVector::create(n_fails);
+  v_out.attr("std"    ) = Rcpp::NumericVector::create(std::sqrt(var_est));
+  return v_out;
+}
+
+// [[Rcpp::export("eval_pedigree_grad_loadings_cpp")]]
+Rcpp::NumericVector eval_pedigree_grad_loadings
+  (SEXP ptr, arma::vec par, int const maxvls,
+   double const abs_eps, double const rel_eps,
+   Rcpp::Nullable<Rcpp::IntegerVector> indices = R_NilValue,
+   int const minvls = -1, bool const do_reorder = true,
+   bool const use_aprx = false, unsigned n_threads = 1L,
+   Rcpp::Nullable<Rcpp::NumericVector> cluster_weights = R_NilValue,
+   int const method = 0, bool const use_tilting = false,
+   Rcpp::Nullable<Rcpp::NumericVector> vls_scales = R_NilValue){
+  Rcpp::XPtr<pedigree_terms_loading> terms_ptr(ptr);
+  std::vector<pedmod::pedigree_ll_term_loading> &terms = terms_ptr->terms;
+  n_threads = eval_get_n_threads(n_threads, *terms_ptr);
+
+  parallelrng::set_rng_seeds(n_threads);
+
+  // checks
+  if(static_cast<size_t>(par.size()) != terms[0].n_par())
+    throw std::invalid_argument(
+        "eval_pedigree_ll_loadings: invalid par argument. Had " +
+          std::to_string(par.size()) + " elements but should have " +
+          std::to_string(terms[0].n_par()) + ".");
+
+  if(maxvls < minvls or maxvls < 1)
+    throw std::invalid_argument("mvndst: invalid maxvls");
+
+  arma::vec const c_weights
+    {check_n_get_cluster_weights(cluster_weights, terms.size())};
+  bool const has_weights = c_weights.size() > 0;
+
+  arma::vec const vls_scales_use
+    {check_n_get_vls_scales(vls_scales, terms.size(), maxvls)};
+  bool const has_vls_scales{vls_scales_use.size() > 0};
+
+  pedmod::cache_mem<double> r_mem;
+  r_mem.set_n_mem(2 * (1 + par.size()), n_threads);
+
+  // compute
+  auto all_idx = get_indices(indices, *terms_ptr);
+  int const * idx = &all_idx[0];
+
+  int n_fails(0);
+  openmp_exception_ptr exception_handler;
+  pedmod::cdf_methods const meth = pedmod::get_cdf_methods(method);
+
+#ifdef _OPENMP
+#pragma omp parallel num_threads(n_threads)
+{
+#endif
+  double * wmem    = r_mem.get_mem(),
+         * var_est = wmem + 1 + par.size();
+  std::fill(wmem   , wmem    + 1 + par.size(), 0.);
+  std::fill(var_est, var_est + 1 + par.size(), 0.);
+
+#ifdef _OPENMP
+#pragma omp for schedule(static) reduction(+:n_fails)
+#endif
+  for(int i = 0; i < all_idx.size(); ++i)
+    exception_handler.run([&]() -> void {
+      if(idx[i] >= static_cast<int>(terms.size()))
+        return;
+      bool did_fail(false);
+      double const w_i = has_weights ? c_weights[idx[i]] : 1;
+      if(std::abs(w_i) < std::numeric_limits<double>::epsilon())
+        return;
+
+      int minvls_use{minvls};
+      int maxvls_use{maxvls};
+      if(has_vls_scales){
+        if(minvls > 0)
+          minvls_use = std::max<int>(1, std::lround(minvls * vls_scales_use[i]));
+        maxvls_use = std::lround(maxvls * vls_scales_use[i]);
+      }
+
+      *wmem += terms.at(idx[i]).gr(
+        &par[0], wmem + 1, var_est, maxvls_use, abs_eps, rel_eps, minvls_use,
+        do_reorder, use_aprx, did_fail, w_i, meth, use_tilting);
+      n_fails += did_fail;
+    });
+#ifdef _OPENMP
+}
+#endif
+
+  exception_handler.rethrow_if_error();
+
+  // aggregate the result
+  auto const n_par = terms[0].n_par();
+  Rcpp::NumericVector grad(n_par),
+                   std_est(n_par + 1);
+  double ll(0.);
+  for(unsigned i = 0; i < n_threads; ++i){
+    double *wmem = r_mem.get_mem(i);
+    ll += *wmem;
+    for(unsigned j = 0; j < par.size(); ++j){
+      grad   [j] += wmem[j + 1];
+      std_est[j] += wmem[j + 1 + par.size()];
+    }
+    std_est[par.size()] += wmem[par.size() + 1 + par.size()];
+  }
+
+  for(unsigned j = 0; j < par.size() + 1; ++j)
+    std_est[j] = std::sqrt(std_est[j]);
+
   grad.attr("logLik")  = Rcpp::NumericVector::create(ll);
   grad.attr("n_fails") = Rcpp::IntegerVector::create(n_fails);
   grad.attr("std")     = std_est;

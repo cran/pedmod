@@ -25,6 +25,13 @@ test_that("examples in manual pages gives the correct answer for eval_pedigree_[
     method = 1L)
   expect_equal(truth, pedmod_res, check.attributes = FALSE,
                tolerance = 1e-4)
+
+  pedmod_res <- mvndst(
+    lower = rep(-Inf, n), upper = u, sigma = S, mu = numeric(n),
+    maxvls = 1e6, abs_eps = 0, rel_eps = 1e-4, use_aprx = FALSE,
+    method = 1L, use_tilting = TRUE)
+  expect_equal(truth, pedmod_res, check.attributes = FALSE,
+               tolerance = 1e-4)
 })
 
 test_that("examples in manual pages gives the correct answer for eval_pedigree_[ll]/[grad]", {
@@ -111,4 +118,34 @@ test_that("examples in manual pages gives the correct answer for eval_pedigree_[
     rel_eps = 1e-3, minvls = 2000, use_aprx = TRUE,
     cluster_weights = c(1, 3, 0))
   expect_equal(c(ll_w_weight), attr(deriv_truth, "logLik"), tolerance = 1e-3)
+
+  # with loadings
+  dat_arg_loadings <- lapply(fam_dat, function(x){
+    list(y = as.numeric(x$y), X = x$X, Z = x$X[, 1:2],
+         scale_mats = list(x$rel_mat, x$met_mat))
+  })
+
+  ptr_loadings <-
+    pedigree_ll_terms_loadings(dat_arg_loadings, max_threads = 1L)
+
+  scs <- c(log(0.5) / 2, 0, log(0.33) / 2, 0)
+  ll_loadings <- eval_pedigree_ll(
+    ptr = ptr_loadings, par = c(beta, scs), abs_eps = -1, maxvls = 1e4,
+    rel_eps = 1e-3, minvls = 2000, use_aprx = TRUE)
+
+  expect_equal(ll_loadings, truth, tolerance = 1e-5, check.attributes = FALSE)
+
+  scs <- c(log(0.5) / 2, 0.1, log(0.33) / 2, 0.2)
+  # deriv_truth_loadings <-
+  #   eval_pedigree_grad(
+  #     ptr = ptr_loadings, par = c(beta, scs), abs_eps = -1, maxvls = 1e7,
+  #     rel_eps = 1e-8, minvls = 1e7, use_aprx = TRUE)
+  deriv_truth_loadings <- c(
+    -0.139556620266106, 0.580820507649435, -1.61359030470197, -0.110463712185143, 0.242133123173374, -0.331049584276145, 0.0120970212929095)
+
+  deriv_loadings <- eval_pedigree_grad(
+    ptr = ptr_loadings, par = c(beta, scs), abs_eps = -1, maxvls = 1e4,
+    rel_eps = 1e-3, minvls = 2000, use_aprx = TRUE)
+  expect_equal(deriv_loadings, deriv_truth_loadings, tolerance = 1e-3,
+               check.attributes = FALSE)
 })

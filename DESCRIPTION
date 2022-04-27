@@ -1,11 +1,12 @@
 Package: pedmod
 Type: Package
 Title: Pedigree Models
-Version: 0.1.0
+Version: 0.2.0
 Authors@R: c(
   person("Benjamin", "Christoffersen", 
          email = "boennecd@gmail.com", 
-         role = c("cre", "aut")), 
+         role = c("cre", "aut"), 
+         comment = c(ORCID = "0000-0002-7182-1346")), 
   person("Alan", "Genz", 
          role = c("cph")),
   person("Frank", "Bretz", 
@@ -19,6 +20,10 @@ Authors@R: c(
   person("Diethelm", "Wuertz", 
          role = c("cph")),
   person("R-core", email = "R-core@R-project.org",
+         role = "cph"),
+  person("Leo", "Belzile", 
+         role = "cph"),
+  person("Zdravko", "Botev", 
          role = "cph"))
 Maintainer: Benjamin Christoffersen <boennecd@gmail.com>
 Description: Provides functions to estimate mixed probit models using, for 
@@ -26,27 +31,33 @@ Description: Provides functions to estimate mixed probit models using, for
     commonly called liability threshold models. The approximation is 
     based on direct log marginal likelihood approximations like the randomized 
     Quasi-Monte Carlo suggested by <doi:10.1198/106186002394> with a similar 
-    procedure to approximate the derivatives. Graph-based methods are also 
-    provided that can be used to simplify pedigrees.
-License: GPL-2
+    procedure to approximate the derivatives. The minimax tilting method 
+    suggested by <doi:10.1111/rssb.12162> is also supported. Graph-based methods 
+    are also provided that can be used to simplify pedigrees.
+License: GPL-3
 Encoding: UTF-8
 RoxygenNote: 7.1.2
-LinkingTo: Rcpp, RcppArmadillo, BH, testthat
+URL: https://github.com/boennecd/pedmod
+BugReports: https://github.com/boennecd/pedmod/issues
+LinkingTo: Rcpp, RcppArmadillo, BH, testthat, psqn
 Imports: Rcpp
 Suggests: testthat, mvtnorm, xml2, knitr, rmarkdown, R.rsp, abind,
-        kinship2, igraph
+        kinship2, igraph, TruncatedNormal
 Depends: R (>= 3.5.0)
 VignetteBuilder: R.rsp
-SystemRequirements: C++14
+SystemRequirements: C++17
 NeedsCompilation: yes
-Packaged: 2021-10-28 12:05:02 UTC; boennecd
-Author: Benjamin Christoffersen [cre, aut],
+Packaged: 2022-04-27 08:47:52 UTC; boennecd
+Author: Benjamin Christoffersen [cre, aut]
+    (<https://orcid.org/0000-0002-7182-1346>),
   Alan Genz [cph],
   Frank Bretz [cph],
   Bjoern Bornkamp [cph],
   Torsten Hothorn [cph],
   Christophe Dutang [cph],
   Diethelm Wuertz [cph],
-  R-core [cph]
+  R-core [cph],
+  Leo Belzile [cph],
+  Zdravko Botev [cph]
 Repository: CRAN
-Date/Publication: 2021-10-29 08:50:02 UTC
+Date/Publication: 2022-04-27 13:30:09 UTC

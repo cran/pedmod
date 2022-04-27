@@ -42,6 +42,8 @@
 #' More samples yields a better estimate of the error but a worse
 #' approximation. Eight is used in the original Fortran code. If one is
 #' used then the error will be set to zero because it cannot be estimated.
+#' @param use_tilting \code{TRUE} if the minimax tilting method suggested
+#' by Botev (2017). See \doi{10.1111/rssb.12162}.
 #'
 #' @return
 #' An approximation of the CDF. The \code{"n_it"} attribute shows the number of
@@ -57,25 +59,44 @@
 #' u <- rnorm(n)
 #'
 #' system.time(pedmod_res <- mvndst(
-#'   lower = rep(-Inf, n), upper = u, sigma = S, mu = numeric(n),
-#'   maxvls = 1e6, abs_eps = 0, rel_eps = 1e-4, use_aprx = TRUE))
+#'     lower = rep(-Inf, n), upper = u, sigma = S, mu = numeric(n),
+#'     maxvls = 1e6, abs_eps = 0, rel_eps = 1e-4, use_aprx = TRUE))
 #' pedmod_res
 #'
 #' # compare with mvtnorm
 #' if(require(mvtnorm)){
-#'   mvtnorm_time <- system.time(mvtnorm_res <- pmvnorm(
-#'     upper = u, sigma = S, algorithm = GenzBretz(
-#'       maxpts = 1e6, abseps = 0, releps = 1e-4)))
-#'   cat("mvtnorm_res:\n")
-#'   print(mvtnorm_res)
+#'     mvtnorm_time <- system.time(mvtnorm_res <- mvtnorm::pmvnorm(
+#'         upper = u, sigma = S, algorithm = GenzBretz(
+#'             maxpts = 1e6, abseps = 0, releps = 1e-4)))
+#'     cat("mvtnorm_res:\n")
+#'     print(mvtnorm_res)
 #'
-#'   cat("mvtnorm_time:\n")
-#'   print(mvtnorm_time)
+#'     cat("mvtnorm_time:\n")
+#'     print(mvtnorm_time)
+#' }
+#'
+#' # with titling
+#' system.time(pedmod_res <- mvndst(
+#'     lower = rep(-Inf, n), upper = u, sigma = S, mu = numeric(n),
+#'     maxvls = 1e6, abs_eps = 0, rel_eps = 1e-4, use_tilting = TRUE))
+#' pedmod_res
+#'
+#' # compare with TruncatedNormal
+#' if(require(TruncatedNormal)){
+#'     TruncatedNormal_time <- system.time(
+#'         TruncatedNormal_res <- TruncatedNormal::pmvnorm(
+#'             lb = rep(-Inf, n), ub = u, sigma = S,
+#'             B = attr(pedmod_res, "n_it"), type = "qmc"))
+#'     cat("TruncatedNormal_res:\n")
+#'     print(TruncatedNormal_res)
+#'
+#'     cat("TruncatedNormal_time:\n")
+#'     print(TruncatedNormal_time)
 #' }
 #'
 #' @export
-mvndst <- function(lower, upper, mu, sigma, maxvls = 25000L, abs_eps = .001, rel_eps = 0L, minvls = -1L, do_reorder = TRUE, use_aprx = FALSE, method = 0L, n_sequences = 8L) {
-    .Call(`_pedmod_mvndst`, lower, upper, mu, sigma, maxvls, abs_eps, rel_eps, minvls, do_reorder, use_aprx, method, n_sequences)
+mvndst <- function(lower, upper, mu, sigma, maxvls = 25000L, abs_eps = .001, rel_eps = 0L, minvls = -1L, do_reorder = TRUE, use_aprx = FALSE, method = 0L, n_sequences = 8L, use_tilting = FALSE) {
+    .Call(`_pedmod_mvndst`, lower, upper, mu, sigma, maxvls, abs_eps, rel_eps, minvls, do_reorder, use_aprx, method, n_sequences, use_tilting)
 }
 
 #' Get a C++ Object for Log Marginal Likelihood Approximations
@@ -88,6 +109,7 @@ mvndst <- function(lower, upper, mu, sigma, maxvls = 25000L, abs_eps = .001, rel
 #' with an:
 #' \itemize{
 #'   \item{\code{"X"}}{ element with the design matrix for the fixed effect,}
+#'   \item{\code{"Z"}}{ element with the design matrix for the loadings of the effects (only needed for \code{pedigree_ll_terms_loadings}),}
 #'   \item{\code{"y"}}{ element with the zero-one outcomes, and}
 #'   \item{\code{"scale_mats"}}{ element with a list where each element is a
 #' scale/correlation matrix for a particular type of effect.}
@@ -104,7 +126,16 @@ mvndst <- function(lower, upper, mu, sigma, maxvls = 25000L, abs_eps = .001, rel
 #' Thus, it is often important that the user adds an intercept column
 #' to these matrices as it is hardly ever justified to not include the
 #' intercept (the exceptions being e.g. when splines are used which include
-#' the intercept and with certain dummy designs).
+#' the intercept and with certain dummy designs). This equally holds for
+#' the \code{Z} matrices with \code{pedigree_ll_terms_loadings}.
+#'
+#' \code{pedigree_ll_terms_loadings} relax the assumption that the scale
+#' parameter is the same for all individuals. \code{pedigree_ll_terms_loadings}
+#' and \code{pedigree_ll_terms} yield the same model if \code{"Z"} is an
+#' intercept column for all families but with a different parameterization.
+#' In this case, \code{pedigree_ll_terms} will be
+#' faster. See \code{vignette("pedmod", "pedmod")} for examples of using
+#' \code{pedigree_ll_terms_loadings}.
 #'
 #' @examples
 #' # three families as an example
@@ -152,24 +183,55 @@ mvndst <- function(lower, upper, mu, sigma, maxvls = 25000L, abs_eps = .001, rel
 #' # get a pointer to the C++ object
 #' ptr <- pedigree_ll_terms(dat_arg, max_threads = 1L)
 #'
+#' # get the argument for a the version with loadings
+#' dat_arg_loadings <- lapply(fam_dat, function(x){
+#'   list(y = as.numeric(x$y), X = x$X, Z = x$X[, 1:2],
+#'        scale_mats = list(x$rel_mat, x$met_mat))
+#' })
+#'
+#' ptr <- pedigree_ll_terms_loadings(dat_arg_loadings, max_threads = 1L)
+#'
 #' @export
 pedigree_ll_terms <- function(data, max_threads = 1L, n_sequences = 8L) {
     .Call(`_pedmod_pedigree_ll_terms`, data, max_threads, n_sequences)
 }
 
-get_n_scales <- function(ptr) {
+.get_n_scales <- function(ptr) {
     .Call(`_pedmod_get_n_scales`, ptr)
 }
 
-get_n_terms <- function(ptr) {
+.get_n_scales_loadings <- function(ptr) {
+    .Call(`_pedmod_get_n_scales_loadings`, ptr)
+}
+
+.get_n_terms <- function(ptr) {
     .Call(`_pedmod_get_n_terms`, ptr)
 }
 
-eval_pedigree_ll_cpp <- function(ptr, par, maxvls, abs_eps, rel_eps, indices = NULL, minvls = -1L, do_reorder = TRUE, use_aprx = FALSE, n_threads = 1L, cluster_weights = NULL, method = 0L) {
-    .Call(`_pedmod_eval_pedigree_ll`, ptr, par, maxvls, abs_eps, rel_eps, indices, minvls, do_reorder, use_aprx, n_threads, cluster_weights, method)
+.get_n_terms_loadings <- function(ptr) {
+    .Call(`_pedmod_get_n_terms_loadings`, ptr)
 }
 
-eval_pedigree_grad_cpp <- function(ptr, par, maxvls, abs_eps, rel_eps, indices = NULL, minvls = -1L, do_reorder = TRUE, use_aprx = FALSE, n_threads = 1L, cluster_weights = NULL, method = 0L) {
-    .Call(`_pedmod_eval_pedigree_grad`, ptr, par, maxvls, abs_eps, rel_eps, indices, minvls, do_reorder, use_aprx, n_threads, cluster_weights, method)
+eval_pedigree_ll_cpp <- function(ptr, par, maxvls, abs_eps, rel_eps, indices = NULL, minvls = -1L, do_reorder = TRUE, use_aprx = FALSE, n_threads = 1L, cluster_weights = NULL, method = 0L, use_tilting = FALSE, vls_scales = NULL) {
+    .Call(`_pedmod_eval_pedigree_ll`, ptr, par, maxvls, abs_eps, rel_eps, indices, minvls, do_reorder, use_aprx, n_threads, cluster_weights, method, use_tilting, vls_scales)
+}
+
+eval_pedigree_grad_cpp <- function(ptr, par, maxvls, abs_eps, rel_eps, indices = NULL, minvls = -1L, do_reorder = TRUE, use_aprx = FALSE, n_threads = 1L, cluster_weights = NULL, method = 0L, use_tilting = FALSE, vls_scales = NULL) {
+    .Call(`_pedmod_eval_pedigree_grad`, ptr, par, maxvls, abs_eps, rel_eps, indices, minvls, do_reorder, use_aprx, n_threads, cluster_weights, method, use_tilting, vls_scales)
+}
+
+#' @rdname pedigree_ll_terms
+#'
+#' @export
+pedigree_ll_terms_loadings <- function(data, max_threads = 1L, n_sequences = 8L) {
+    .Call(`_pedmod_pedigree_ll_terms_loadings`, data, max_threads, n_sequences)
+}
+
+eval_pedigree_ll_loadings_cpp <- function(ptr, par, maxvls, abs_eps, rel_eps, indices = NULL, minvls = -1L, do_reorder = TRUE, use_aprx = FALSE, n_threads = 1L, cluster_weights = NULL, method = 0L, use_tilting = FALSE, vls_scales = NULL) {
+    .Call(`_pedmod_eval_pedigree_ll_loadings`, ptr, par, maxvls, abs_eps, rel_eps, indices, minvls, do_reorder, use_aprx, n_threads, cluster_weights, method, use_tilting, vls_scales)
+}
+
+eval_pedigree_grad_loadings_cpp <- function(ptr, par, maxvls, abs_eps, rel_eps, indices = NULL, minvls = -1L, do_reorder = TRUE, use_aprx = FALSE, n_threads = 1L, cluster_weights = NULL, method = 0L, use_tilting = FALSE, vls_scales = NULL) {
+    .Call(`_pedmod_eval_pedigree_grad_loadings`, ptr, par, maxvls, abs_eps, rel_eps, indices, minvls, do_reorder, use_aprx, n_threads, cluster_weights, method, use_tilting, vls_scales)
 }
 

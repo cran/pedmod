@@ -5,6 +5,10 @@
 // I ran into issues with likes those mentioned here
 //   https://bugs.webkit.org/show_bug.cgi?id=59249
 // Thus, we always use math.h
+#ifdef beta
+// we get an error if we do not undefine beta
+#undef beta
+#endif
 #include <math.h> // may be included anyway?
 
 /**
@@ -12,13 +16,31 @@
  * R function.
  */
 static inline double pnorm_std(double const x, int lower, int is_log) {
-  if(isinf(x) || isnan(x))
-    return NAN;
+  int const is_inf = isinf(x),
+            is_nan = isnan(x);
 
-  double p, cp;
-  p = x;
-  Rf_pnorm_both(x, &p, &cp, lower ? 0 : 1, is_log);
-  return lower ? p : cp;
+  if(!is_inf && !is_nan){
+    double p, cp;
+    p = x;
+    Rf_pnorm_both(x, &p, &cp, lower ? 0 : 1, is_log);
+    return lower ? p : cp;
+
+  } else if(is_inf){
+    if(is_log){
+      if(lower)
+        return x > 0 ? 0 : -INFINITY;
+      else
+        return x < 0 ? 0 :  INFINITY;
+    } else {
+      if(lower)
+        return x > 0 ? 1 : 0;
+      else
+        return x < 0 ? 1 : 0;
+    }
+  }
+
+  // isnan == TRUE
+  return NAN;
 }
 
 /**

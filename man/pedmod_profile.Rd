@@ -26,6 +26,8 @@ pedmod_profile(
   verbose = FALSE,
   max_step = 15L,
   standardized = FALSE,
+  use_tilting = FALSE,
+  vls_scales = NULL,
   ...
 )
 }
@@ -93,6 +95,15 @@ either directions.}
 \item{standardized}{logical for whether to use the standardized or direct
 parameterization. See \code{\link{standardized_to_direct}} and the vignette
 at \code{vignette("pedmod", package = "pedmod")}.}
+
+\item{use_tilting}{\code{TRUE} if the minimax tilting method suggested
+by Botev (2017). See \doi{10.1111/rssb.12162}.}
+
+\item{vls_scales}{can be a numeric vector with a positive scalar for each
+cluster. Then \code{vls_scales[i] * minvls} and
+\code{vls_scales[i] * maxvls} is used for cluster \code{i} rather than
+\code{minvls} and \code{maxvls}. Set \code{vls_scales = NULL} if the latter
+should be used.}
 
 \item{...}{arguments passed on to \code{\link{pedmod_opt}}.}
 }

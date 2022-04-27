@@ -3,6 +3,7 @@
 \name{pedmod_opt}
 \alias{pedmod_opt}
 \alias{pedmod_start}
+\alias{pedmod_start_loadings}
 \title{Optimize the Log Marginal Likelihood}
 \usage{
 pedmod_opt(
@@ -22,6 +23,8 @@ pedmod_opt(
   fix = NULL,
   standardized = FALSE,
   method = 0L,
+  use_tilting = FALSE,
+  vls_scales = NULL,
   ...
 )
 
@@ -41,11 +44,22 @@ pedmod_start(
   cluster_weights = NULL,
   standardized = FALSE,
   method = 0L,
-  sc_start = NULL
+  sc_start = NULL,
+  use_tilting = FALSE,
+  vls_scales = NULL
+)
+
+pedmod_start_loadings(
+  ptr,
+  data,
+  indices = NULL,
+  cluster_weights = NULL,
+  sc_start_invariant = NULL
 )
 }
 \arguments{
-\item{ptr}{object from \code{\link{pedigree_ll_terms}}.}
+\item{ptr}{object from \code{\link{pedigree_ll_terms}} or
+\code{\link{pedigree_ll_terms_loadings}}.}
 
 \item{par}{starting values passed to \code{opt_func}.}
 
@@ -95,10 +109,19 @@ at \code{vignette("pedmod", package = "pedmod")}.}
 \item{method}{integer with the method to use. Zero yields randomized Korobov
 lattice rules while one yields scrambled Sobol sequences.}
 
+\item{use_tilting}{\code{TRUE} if the minimax tilting method suggested
+by Botev (2017). See \doi{10.1111/rssb.12162}.}
+
+\item{vls_scales}{can be a numeric vector with a positive scalar for each
+cluster. Then \code{vls_scales[i] * minvls} and
+\code{vls_scales[i] * maxvls} is used for cluster \code{i} rather than
+\code{minvls} and \code{maxvls}. Set \code{vls_scales = NULL} if the latter
+should be used.}
+
 \item{...}{Arguments passed to \code{opt_func}.}
 
 \item{data}{the \code{\link{list}} that was passed to
-\code{\link{pedigree_ll_terms}}.}
+\code{\link{pedigree_ll_terms}} or \code{\link{pedigree_ll_terms_loadings}}.}
 
 \item{scale_max}{the maximum value for the scale parameters. Sometimes, the
 optimization method tends to find large scale parameters and get stuck.
@@ -106,6 +129,9 @@ Setting a maximum solves this.}
 
 \item{sc_start}{starting value for the scale parameters. Use \code{NULL} if
 you have no value to start with.}
+
+\item{sc_start_invariant}{scale parameter(s) like sc_start. It is the value
+that all individuals should have (i.e. not one that varies by individual).}
 }
 \value{
 \code{pedmod_opt}: The output from the \code{opt_func} argument. Thus, if
@@ -121,15 +147,22 @@ number of non-fixed parameters.
  \item logLik_no_rng: the log maximum likelihood without random effects.
  \item logLik_est: the likelihood at par.
 }
+
+\code{pedmod_start_loadings}: A \code{list} with:
+\itemize{
+ \item par: the starting value.
+ \item beta_no_rng: the fixed effects MLEs without random effects.
+ \item logLik_no_rng: the log maximum likelihood without random effects.
+}
 }
 \description{
 Optimizes \code{\link{eval_pedigree_ll}} and \code{\link{eval_pedigree_grad}}
 using a passed optimization function.
 }
 \details{
-\code{pedmod_start} yields starting values which can be used for
-\code{pedmod_opt}. The method is based on a heuristic where we make the
-assumption that the fixed effects are unrelated to the random effects.
+\code{pedmod_start} and \code{pedmod_start_loadings}
+yield starting values which can be used for
+\code{pedmod_opt}. The methods are based on a heuristics.
 }
 \examples{
 \donttest{
