@@ -7,7 +7,7 @@
 
 .warn_on_standardized <- function(standardized)
   if(standardized)
-    warning("standardized makes no difference for loadings")
+    warning("standardized makes no difference yet and is not accounted for")
 
 #' @rdname eval_pedigree
 #'
@@ -45,6 +45,10 @@
 #'
 #' @inheritParams pedigree_ll_terms
 #' @inheritParams mvndst
+#'
+#' @details
+#' \code{eval_pedigree_hess} is only implemented for objects from
+#' \code{\link{pedigree_ll_terms}}.
 #'
 #' @return \code{eval_pedigree_ll}:
 #' a scalar with the log marginal likelihood approximation.
@@ -129,6 +133,27 @@
 #'   ptr = dum_ptr, par = c(beta, log(scs)), abs_eps = -1, maxvls = 1e6,
 #'   rel_eps = 1e-3, minvls = 2000, use_aprx = TRUE))
 #' all.equal(deriv_dum, deriv_w_weight, tolerance = 1e-3)
+#'
+#' # the hessian is computed on the scale parameter scale rather than on the
+#' # log of the scale parameters
+#' system.time(hess_w_weight <- eval_pedigree_hess(
+#'   ptr = ptr, par = c(beta, log(scs)), abs_eps = -1, maxvls = 1e6,
+#'   rel_eps = 1e-3, minvls = 2000, use_aprx = TRUE,
+#'   cluster_weights = c(1, 3, 0)))
+#'
+#' system.time(hess_dum <- eval_pedigree_hess(
+#'   ptr = dum_ptr, par = c(beta, log(scs)), abs_eps = -1, maxvls = 1e6,
+#'   rel_eps = 1e-3, minvls = 2000, use_aprx = TRUE))
+#' attr(hess_w_weight, "n_fails") <- attr(hess_dum, "n_fails") <- NULL
+#' all.equal(hess_w_weight, hess_dum, tolerance = 1e-3)
+#'
+#' # the results are consistent with the gradient output
+#' all.equal(attr(deriv_dum, "logLik"), attr(hess_dum, "logLik"),
+#'           tolerance = 1e-5)
+#'
+#' hess_grad <- attr(hess_dum, "grad")
+#' all.equal(hess_grad, deriv_dum, check.attributes = FALSE,
+#'           tolerance = 1e-3)
 #'
 #' # with loadings
 #' dat_arg_loadings <- lapply(fam_dat, function(x){
@@ -263,4 +288,69 @@ eval_pedigree_grad <- function(
     indices = indices, minvls = minvls, do_reorder = do_reorder,
     use_aprx = use_aprx, n_threads = n_threads, use_tilting = use_tilting,
     cluster_weights = cluster_weights, method = method, vls_scales = vls_scales)
+}
+
+
+#' @rdname eval_pedigree
+#'
+#' @return \code{eval_pedigree_hess}: a matrix with the hessian with
+#' respect to \code{par}.
+#' An attribute called \code{"logLik"} contains the
+#' log marginal likelihood approximation and an attribute called \code{"grad"}
+#' contains the gradient·
+#' The attribute \code{"hess_org"} contains the Hessian with the scale
+#' parameter on the identity scale rather than the log scale.
+#' \code{"vcov"} and \code{"vcov_org"} are
+#' the covariance matrices from the hessian and \code{"hess_org"}.
+#'
+#' @export
+eval_pedigree_hess <- function(
+  ptr, par, maxvls, abs_eps, rel_eps, indices = NULL, minvls = -1L,
+  do_reorder = TRUE, use_aprx = FALSE, n_threads = 1L, cluster_weights = NULL,
+  standardized = FALSE, method = 0L, use_tilting = FALSE, vls_scales = NULL){
+  stopifnot(inherits(ptr, "pedigree_ll_terms_ptr"))
+  .warn_on_standardized(standardized)
+
+  hess_org <- eval_pedigree_hess_cpp(
+    ptr = ptr, par = par, maxvls = maxvls, abs_eps = abs_eps,
+    rel_eps = rel_eps, indices = indices, minvls = minvls,
+    do_reorder = do_reorder, use_aprx = use_aprx, n_threads = n_threads,
+    cluster_weights = cluster_weights, method = method,
+    use_tilting = use_tilting, vls_scales = vls_scales)
+
+  # compute the Hessian on the log scale of the scale parameters
+  gr <- attr(hess_org, "grad")
+
+  n_scales <- .get_n_scales(ptr)
+  n_par <- length(par)
+  jac <- rep(1, n_par)
+  idx_scale <- seq_len(n_scales) + n_par - n_scales
+  scales <- exp(tail(par, n_scales))
+  jac[idx_scale] <- scales
+  jac <- diag(jac)
+
+  # TODO: this can be done way smarter
+  hess_inner <- matrix(0, n_par * n_par, n_par)
+  for(i in seq_along(idx_scale)){
+    idx <- idx_scale[i]
+    hess_inner[(idx - 1L) * n_par + idx, idx] <- scales[i]
+  }
+
+  hess <- jac %*% hess_org %*% jac + (t(gr) %x% diag(n_par)) %*% hess_inner
+
+  attributes(hess) <- attributes(hess_org)
+  attributes(hess_org) <- NULL
+  dim(hess_org) <- dim(hess)
+  attr(hess, "hess_org") <- hess_org
+
+  vcov <- try(solve(-hess))
+  if(!inherits(vcov, "try-error"))
+    vcov_org <- jac %*% vcov %*% jac
+  else
+    vcov_org <- vcov
+  attr(hess, "vcov") <- vcov
+  attr(hess, "vcov_org") <- vcov_org
+  attr(hess, "grad") <- drop(jac %*% gr)
+
+  hess
 }
