@@ -1,7 +1,7 @@
 Package: pedmod
 Type: Package
 Title: Pedigree Models
-Version: 0.2.1
+Version: 0.2.2
 Authors@R: c(
   person("Benjamin", "Christoffersen", 
          email = "boennecd@gmail.com", 
@@ -47,7 +47,7 @@ Depends: R (>= 3.5.0)
 VignetteBuilder: R.rsp
 SystemRequirements: C++17
 NeedsCompilation: yes
-Packaged: 2022-05-20 09:48:07 UTC; boennecd
+Packaged: 2022-05-27 06:55:16 UTC; boennecd
 Author: Benjamin Christoffersen [cre, aut]
     (<https://orcid.org/0000-0002-7182-1346>),
   Alan Genz [cph],
@@ -60,4 +60,4 @@ Author: Benjamin Christoffersen [cre, aut]
   Leo Belzile [cph],
   Zdravko Botev [cph]
 Repository: CRAN
-Date/Publication: 2022-05-21 23:10:07 UTC
+Date/Publication: 2022-05-27 08:40:02 UTC
