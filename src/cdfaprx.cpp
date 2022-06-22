@@ -60,6 +60,443 @@ cor_vec_res get_cor_vec(const arma::mat &cov){
   return out;
 }
 
+template<class T_Functor>
+template<bool with_tilting, bool with_aprx>
+void cdf<T_Functor>::evaluate_intrands(
+    unsigned const *ndim_in, double const * unifs,
+    unsigned const *n_integrands_in,
+    double * PEDMOD_RESTRICT integrand_val, unsigned const n_draws) PEDMOD_NOEXCEPT {
+#ifdef DO_CHECKS
+  if(*ndim_in         != ndim)
+    throw std::invalid_argument("cdf::eval_integrand: invalid 'ndim_in'");
+  if(*n_integrands_in != n_integrands)
+    throw std::invalid_argument("cdf::eval_integrand: invalid 'n_integrands_in'");
+#endif
+
+  constexpr double Inf = std::numeric_limits<double>::infinity();
+
+  double * const PEDMOD_RESTRICT out      = integrand_val,
+         * const PEDMOD_RESTRICT dr       = draw,
+         * const PEDMOD_RESTRICT su       = dtmp_mem,
+         * const PEDMOD_RESTRICT w        = su + n_draws,
+         * const PEDMOD_RESTRICT lim_l    = w + n_draws,
+         * const PEDMOD_RESTRICT lim_u    = lim_l + n_draws,
+         * const PEDMOD_RESTRICT lim_diff = lim_u + n_draws;
+
+  if constexpr(with_tilting)
+    std::fill(w, w + n_draws, 0);
+  else
+    std::fill(w, w + n_draws, 1);
+
+  double const * PEDMOD_RESTRICT sc   = sigma_chol,
+               * PEDMOD_RESTRICT lw   = lower,
+               * PEDMOD_RESTRICT up   = upper;
+
+  int const *infin_j = infin.begin();
+
+  /* loop over variables and transform them to truncated normal
+   * variables */
+  for(arma::uword j = 0; j < ndim; ++j, ++sc, ++lw, ++up, ++infin_j){
+    std::fill(su, su + n_draws, 0);
+    {
+      double * dri = dr;
+      for(unsigned i = 0; i < j; ++i, ++sc)
+        for(unsigned k = 0; k < n_draws; ++k, ++dri)
+          su[k] += *sc * *dri;
+    }
+
+    if(*infin_j == 0L){
+      std::fill(lim_l, lim_l + n_draws, with_tilting ? -Inf : 0);
+      for(unsigned k = 0; k < n_draws; ++k)
+        lim_u[k] = *up - su[k];
+
+    } else if(*infin_j == 1L){
+      std::fill(lim_u, lim_u  + n_draws, with_tilting ? Inf : 1);
+      for(unsigned k = 0; k < n_draws; ++k)
+        lim_l[k] = *lw - su[k];
+
+    } else
+      for(unsigned k = 0; k < n_draws; ++k) {
+        lim_l[k] = *lw - su[k];
+        lim_u[k] = *up - su[k];
+      }
+
+    bool const is_last_run{j + 1 >= ndim};
+    if constexpr(with_tilting){
+      auto subtract_tilt = [&]{
+        for(unsigned k = 0; k < n_draws; ++k) {
+          lim_l[k] -= tilt_param[j];
+          lim_u[k] -= tilt_param[j];
+        }
+      };
+
+      if constexpr(needs_last_unif)
+        subtract_tilt();
+      else if(!is_last_run)
+        subtract_tilt();
+    } else {
+      if(*infin_j == 0){
+        for(unsigned k = 0; k < n_draws; ++k)
+          lim_u[k] = pnorm_use<true, false, with_aprx>(lim_u[k]);
+
+      } else if(*infin_j == 1){
+        for(unsigned k = 0; k < n_draws; ++k)
+          lim_l[k] = pnorm_use<true, false, with_aprx>(lim_l[k]);
+
+      } else {
+        for(unsigned k = 0; k < n_draws; ++k){
+          lim_l[k] = pnorm_use<true, false, with_aprx>(lim_l[k]);
+          lim_u[k] = pnorm_use<true, false, with_aprx>(lim_u[k]);
+        }
+
+      }
+    }
+
+    auto set_dr_n_weight = [&]{
+      unsigned const offset = j * n_draws;
+
+      if constexpr(with_tilting){
+        for(unsigned k = 0; k < n_draws; ++k){
+          double val, log_pnrms_diff;
+
+          if(lim_l[k] > 0){
+            double const v_lb{pnorm_use<false, true, with_aprx>(lim_l[k])},
+                         v_ub{pnorm_use<false, true, with_aprx>(lim_u[k])};
+
+            log_pnrms_diff = v_lb + std::log1p(-exp(v_ub - v_lb));
+
+            val = std::exp(v_lb) -
+              unifs[k * ndim + j] * std::exp(log_pnrms_diff);
+            val = qnorm_w(val, 0, 1, 0, 0);
+
+          } else if(lim_u[k] < 0){
+            double const v_lb{pnorm_use<true, true, with_aprx>(lim_l[k])},
+                         v_ub{pnorm_use<true, true, with_aprx>(lim_u[k])};
+
+            log_pnrms_diff = v_ub + std::log1p(-exp(v_lb - v_ub));
+
+            if(lim_u[k] < -35)
+              val = qtnorm(unifs[k * ndim + j], lim_l[k], lim_u[k]);
+            else {
+              val =
+                std::exp(v_lb)
+                  + unifs[k * ndim + j] * std::exp(log_pnrms_diff);
+              val = -qnorm_w(val, 0, 1, 0, 0);
+            }
+
+          } else {
+            double const v_lb{pnorm_use<true, false, with_aprx>(lim_l[k])},
+                         v_ub{pnorm_use<false, false, with_aprx>(lim_u[k])};
+
+            log_pnrms_diff = std::log1p(-v_lb - v_ub);
+
+            val = pnorm_use<false, false, with_aprx>(lim_l[k]) -
+              unifs[k * ndim + j] * std::exp(log_pnrms_diff);
+            val = qnorm_w(val, 0, 1, 0, 0);
+
+          }
+
+          double const val_shifted{val + tilt_param[j]};
+          dr[offset + k] = val_shifted;
+          w[k] += log_pnrms_diff +
+            (tilt_param[j] - 2 * val_shifted) * tilt_param[j] / 2;
+
+        }
+      } else {
+        for(unsigned k = 0; k < n_draws; ++k)
+          lim_diff[k] = lim_u[k] - lim_l[k];
+        for(unsigned k = 0; k < n_draws; ++k)
+          w[k] *= lim_diff[k];
+        for(unsigned k = 0; k < n_draws; ++k){
+          double const quant_val
+            {lim_l[k] + unifs[k * ndim + j] * lim_diff[k]};
+          dr[offset + k] = with_aprx ? qnorm_aprx(quant_val)
+                                     : qnorm_w   (quant_val, 0, 1, 1, 0);
+        }
+      }
+
+      for(unsigned k = 0; k < n_draws; ++k)
+        if(lim_l[k] >= lim_u[k] ||
+           unifs[k * ndim + j] <= 0 || unifs[k * ndim + j] >= 1){
+          // for reasons that are beyond me at the moment, unifs are
+          // (although very rarely) sometimes exactly 0 or 1 with some
+          // methods which gives +/-Inf values when the appropriate limit
+          // is +/-Inf
+          w[k] = with_tilting ? -Inf : 0;
+          dr[offset + k] = 0;
+        }
+    };
+
+    if constexpr(needs_last_unif)
+      set_dr_n_weight();
+    else if(!is_last_run)
+      set_dr_n_weight();
+    else {
+      for(unsigned k = 0; k < n_draws; ++k){
+        if constexpr(with_tilting){
+          double log_pnrms_diff;
+
+          if(lim_l[k] > 0){
+            double const v_lb{pnorm_use<false, true, with_aprx>(lim_l[k])},
+                         v_ub{pnorm_use<false, true, with_aprx>(lim_u[k])};
+
+            log_pnrms_diff = v_lb + std::log1p(-exp(v_ub - v_lb));
+
+          } else if(lim_u[k] < 0){
+            double const v_lb{pnorm_use<true, true, with_aprx>(lim_l[k])},
+                         v_ub{pnorm_use<true, true, with_aprx>(lim_u[k])};
+
+            log_pnrms_diff = v_ub + std::log1p(-exp(v_lb - v_ub));
+
+          } else {
+            double const v_lb{pnorm_use<true, false, with_aprx>(lim_l[k])},
+                         v_ub{pnorm_use<false, false, with_aprx>(lim_u[k])};
+
+            log_pnrms_diff = std::log1p(-v_lb - v_ub);
+
+          }
+
+          w[k] += log_pnrms_diff;
+
+        } else
+          w[k] *= lim_u[k] - lim_l[k];
+
+      }
+
+      for(unsigned k = 0; k < n_draws; ++k)
+        if(lim_l[k] >= lim_u[k])
+          w[k] = with_tilting ? -Inf : 0;
+    }
+  }
+
+  /* evaluate the integrand and weight the result. */
+  functor(dr, out, indices.begin(), is_permutated, n_draws);
+
+  // multiply by the density
+  double *o{out};
+  for(unsigned k = 0; k < n_draws; ++k){
+    if constexpr(with_tilting)
+      w[k] = std::exp(w[k]);
+    else if(std::isnan(w[k]))
+      // the method is not numerically stable in very extreme settings
+      // and we may have set a draw equal to +/-Inf which will give
+      // a NaN
+      w[k] = 0;
+
+    w[k] /= functor.get_norm_constant();
+    if(w[k] == 0){
+      std::fill(o, o + n_integrands, 0);
+      o += n_integrands;
+
+    } else
+      for(unsigned i = 0; i < n_integrands; ++i, ++o)
+        *o *= w[k];
+  }
+}
+
+template<class T_Functor>
+void cdf<T_Functor>::alloc_mem
+  (unsigned const max_ndim, unsigned const max_threads) {
+  unsigned const n_up_tri = (max_ndim * (max_ndim + 1)) / 2;
+
+  imem.set_n_mem(3 * max_ndim, max_threads);
+  // TODO: this is wasteful. Look through this
+  dmem.set_n_mem(
+    (7 + n_qmc_seqs()) * max_ndim + n_up_tri + max_ndim * max_ndim +
+      5 * n_qmc_seqs(),
+    max_threads);
+}
+
+template<class T_Functor>
+cdf<T_Functor>::cdf
+  (T_Functor &functor, arma::vec const &lower_in,
+   arma::vec const &upper_in, arma::vec const &mu_in,
+   arma::mat const &sigma_in, bool const do_reorder,
+   bool const use_aprx, bool const use_tilting_in):
+  functor(functor),
+  ndim(mu_in.n_elem),
+  n_integrands(functor.get_n_integrands()),
+  use_aprx(use_aprx),
+  use_tilting{use_tilting_in},
+  infin(([&](){
+    arma::ivec out(imem.get_mem(), ndim, false);
+    get_infin(out, lower_in, upper_in);
+    return out;
+  })()),
+  indices(infin.end(), ndim, false) {
+  /* checks */
+  if(lower_in.n_elem > 1000 or lower_in.n_elem < 1)
+    throw std::invalid_argument("cdf<T_Functor, out_type>: Either dimension zero or dimension greater than 1000");
+
+#ifdef DO_CHECKS
+  if(sigma_in.n_cols != static_cast<size_t>(ndim) or
+       sigma_in.n_rows != static_cast<size_t>(ndim))
+    throw std::invalid_argument("cdf::cdf: invalid 'sigma_in'");
+  if(n_integrands <= 0L)
+    throw std::invalid_argument("cdf::cdf: invalid 'n_integrands'");
+  if(lower_in.n_elem !=  static_cast<size_t>(ndim))
+    throw std::invalid_argument("cdf::cdf: invalid 'lower_in'");
+  if(upper_in.n_elem !=  static_cast<size_t>(ndim))
+    throw std::invalid_argument("cdf::cdf: invalid 'upper_in'");
+#endif
+
+  /* re-scale */
+  double * cur_dtmp_mem = dtmp_mem;
+  auto get_dmem = [&](unsigned const n_ele) -> double * {
+    double * out = cur_dtmp_mem;
+    cur_dtmp_mem += n_ele;
+    return out;
+  };
+
+  double * sds = get_dmem(ndim);
+  for(arma::uword i = 0; i < ndim; ++i){
+    sds[i] = std::sqrt(sigma_in.at(i, i));
+    lower[i] = (lower_in[i] - mu_in[i]) / sds[i];
+    upper[i] = (upper_in[i] - mu_in[i]) / sds[i];
+  }
+
+  is_permutated = false;
+  {
+    int *idx = indices.begin();
+    for(arma::uword i = 0; i < ndim; ++i, ++idx)
+      *idx = static_cast<int>(i);
+  }
+
+  auto setup_titling = [&]{
+    if(use_tilting){
+      for(arma::uword i = 0; i < ndim; ++i){
+        if(infin[i] == 0)
+          lower[i] = -std::numeric_limits<double>::infinity();
+        else if(infin[i] == 1)
+          upper[i] = std::numeric_limits<double>::infinity();
+      }
+
+      if(ndim < 2)
+        use_tilting = false;
+      else {
+        auto find_tilt_res = find_tilting_param
+          (ndim, lower, upper, sigma_chol, 1e-8);
+
+        use_tilting = find_tilt_res.success;
+        if(find_tilt_res.success)
+          std::copy
+          (find_tilt_res.tilting_param.begin(),
+           find_tilt_res.tilting_param.end(), tilt_param);
+      }
+    }
+  };
+
+  if(do_reorder and ndim > 1L){
+    double * const y     = draw,
+           * const A     = get_dmem(ndim),
+           * const B     = get_dmem(ndim),
+           * const DL    = sds,
+           * const delta = get_dmem(ndim);
+    std::fill(sds, sds + ndim, 0.);
+
+    auto const correl = get_cor_vec(sigma_in);
+    int const pivot = 1L, doscale = 1L;
+    int F_inform = 0L,
+           nddim = static_cast<int>(ndim);
+    std::fill(delta, delta + ndim, 0.);
+    arma::ivec infi(itmp_mem, ndim, false);
+
+    {
+      int ndim_int(static_cast<int>(ndim));
+      F77_CALL(mvsort)(
+        &ndim_int, lower, upper, delta,
+        correl.cor_vec.memptr(), infin.begin(), y, &pivot, &nddim, A, B,
+        DL, sigma_chol, infi.memptr(), &F_inform, indices.begin(),
+        &doscale);
+    }
+
+    if(F_inform != 0)
+      throw std::runtime_error("cdf::cdf: error in mvsort");
+
+    for(arma::uword i = 0; i < ndim; ++i){
+      if(indices[i] != static_cast<int>(i)){
+        is_permutated = true;
+        break;
+      }
+    }
+
+    if(is_permutated){
+      for(arma::uword i = 0; i < ndim; ++i){
+        lower[i] = A[i];
+        upper[i] = B[i];
+        infin[i] = infi[i];
+      }
+
+      arma::mat sigma_permu(get_dmem(ndim * ndim), ndim, ndim, false, true);
+      for(arma::uword j = 0; j < ndim; ++j)
+        for(arma::uword i = 0; i < ndim; ++i)
+          sigma_permu.at(i, j) = sigma_in.at(indices[i], indices[j]);
+
+      setup_titling();
+      functor.prep_permutated(sigma_permu, indices.begin());
+
+      return;
+
+    } else
+      for(arma::uword i = 0; i < ndim; ++i){
+        lower[i] = A[i];
+        upper[i] = B[i];
+      }
+
+  } else if(!do_reorder and ndim > 1L) {
+    arma::mat tmp(get_dmem(ndim * ndim), ndim, ndim, false, true);
+    tmp = sigma_in;
+    for(arma::uword i = 0; i < ndim; ++i)
+      for(arma::uword j = 0; j < ndim; ++j)
+        tmp.at(i, j) /= sds[i] * sds[j];
+
+    if(!arma::chol(tmp, tmp)) // TODO: memory allocation
+      std::fill(sigma_chol, sigma_chol + (ndim * (ndim + 1L)) / 2L,
+                std::numeric_limits<double>::infinity());
+    else
+      copy_upper_tri(tmp, sigma_chol);
+
+    if(ndim > 1L){
+      /* rescale such that Choleksy decomposition has ones in the diagonal */
+      double * sc = sigma_chol;
+      for(arma::uword i = 0; i < ndim; ++i){
+        double const scal = sc[i];
+        lower[i] /= scal;
+        upper[i] /= scal;
+        double * const sc_end = sc + i + 1L;
+        for(; sc != sc_end; ++sc)
+          *sc /= scal;
+      }
+    }
+  } else
+    *sigma_chol = 1.;
+
+  setup_titling();
+  functor.prep_permutated(sigma_in, indices.begin());
+}
+
+template<class T_Functor>
+void cdf<T_Functor>::operator()(
+    unsigned const *ndim_in, double const * unifs,
+    unsigned const *n_integrands_in,
+    double * PEDMOD_RESTRICT integrand_val, unsigned const n_draws) PEDMOD_NOEXCEPT {
+  if(use_tilting) {
+    if(use_aprx)
+      evaluate_intrands<true, true>
+       (ndim_in, unifs, n_integrands_in, integrand_val,n_draws);
+    else
+      evaluate_intrands<true, false>
+        (ndim_in, unifs, n_integrands_in, integrand_val,n_draws);
+  } else {
+    if(use_aprx)
+      evaluate_intrands<false, true>
+        (ndim_in, unifs, n_integrands_in, integrand_val,n_draws);
+    else
+      evaluate_intrands<false, false>
+        (ndim_in, unifs, n_integrands_in, integrand_val,n_draws);
+  }
+}
+
 pedigree_l_factor::pedigree_l_factor
   (std::vector<arma::mat> const &scale_mats, unsigned const max_threads,
    arma::mat const &X_in, unsigned const max_n_sequences):
@@ -95,7 +532,7 @@ pedigree_l_factor::pedigree_l_factor
   imem.set_n_mem(n_scales, max_threads);
 
   // check that the scale matrices are positive semi definite
-  arma::vec vdum(dmem.get_mem(), n_mem, false);
+  arma::vec vdum(dmem.get_mem(), n_mem, false, true);
   for(arma::mat const &m : scale_mats){
     if(!arma::eig_sym(vdum, m))
       throw std::runtime_error("Eigen decomposition failed in pedigree_l_factor constructor");
@@ -131,7 +568,7 @@ void pedigree_l_factor::setup
   cdf_mem = next_mem;
   next_mem += 2 * get_n_integrands();
 
-  arma::mat t1(next_mem, n_mem, n_mem, false);
+  arma::mat t1(next_mem, n_mem, n_mem, false, true);
   if(!arma::inv_sympd(t1, sig))
     throw std::runtime_error("pedigree_ll_factor::setup: inv_sympd failed");
 
@@ -148,11 +585,11 @@ void pedigree_l_factor::prep_permutated
   double * next_mem = cdf_mem + 2 * get_n_integrands();
   interal_mem = next_mem + n_fix * n_mem + n_mem * n_mem * n_scales;
 
-  arma::vec dum_vec(interal_mem  , n_mem, false);
-  arma::mat t1(dum_vec.end(), n_mem, n_mem, false),
-            t2(t1.end()     , n_mem, n_mem, false),
-            t3(t2.end()     , n_mem, n_mem, false),
-       X_permu(t3.end()     , n_mem, n_fix, false);
+  arma::vec dum_vec(interal_mem  , n_mem, false, true);
+  arma::mat t1(dum_vec.end(), n_mem, n_mem, false, true),
+            t2(t1.end()     , n_mem, n_mem, false, true),
+            t3(t2.end()     , n_mem, n_mem, false, true),
+       X_permu(t3.end()     , n_mem, n_fix, false, true);
   if(!arma::chol(t1, sig, "lower"))
     throw std::runtime_error("pedigree_ll_factor::setup: chol failed");
 
@@ -162,7 +599,7 @@ void pedigree_l_factor::prep_permutated
       X_permu(i, j) = X(indices[i], j);
 
   d_fix_mat = next_mem;
-  arma::mat d_fix_obj(d_fix_mat, n_mem, n_fix, false);
+  arma::mat d_fix_obj(d_fix_mat, n_mem, n_fix, false, true);
   next_mem += n_mem * n_fix;
   arma::solve(d_fix_obj, arma::trimatl(t1), X_permu);
 
@@ -459,6 +896,8 @@ void pedigree_l_factor_Hessian::prep_permutated
           scale_mats[scale](indices[id2], indices[id1]);
 }
 
+// TODO: this function can be made faster by only working with the upper
+//       triangles of the symmetric matrices
 void pedigree_l_factor_Hessian::operator()
   (double const * PEDMOD_RESTRICT draw, double * PEDMOD_RESTRICT out,
    int const *, bool const, unsigned const n_draws) {
@@ -498,8 +937,10 @@ void pedigree_l_factor_Hessian::operator()
     }
 
     double * const outer_res{res_i + shift_outer_res};
+    // TODO: get rid of this if we start working only the triangular part
+    std::fill(outer_res, outer_res + n_mem * n_mem, 0);
     for(unsigned id1 = 0; id1 < n_mem; ++id1)
-      for(unsigned id2 = 0; id2 < n_mem; ++id2)
+      for(unsigned id2 = 0; id2 <= id1; ++id2)
         outer_res[id2 + id1 * n_mem] =
           (draw_scaled[id1] * draw_scaled[id2]
              - vcov_inv[id2 + id1 * n_mem]) / 2;
@@ -509,18 +950,30 @@ void pedigree_l_factor_Hessian::operator()
       outer_vec[fix] = std::inner_product
         (X_permu + fix * n_mem, X_permu + (fix + 1) * n_mem, draw_scaled, 0.);
 
-    // TODO: exploit the symmetry and only store the triangular part
-    for(size_t scale = 0; scale < n_scales; ++scale)
-      outer_vec[scale + n_fix] = std::inner_product
-        (outer_res, outer_res + n_mem * n_mem, scale_mats_permu[scale], 0.);
+    for(size_t scale = 0; scale < n_scales; ++scale){
+      outer_vec[scale + n_fix] = 0;
+      double const *scale_mat{scale_mats_permu[scale]};
+      for(unsigned id1 = 0; id1 < n_mem; ++id1){
+        for(unsigned id2 = 0; id2 < id1; ++id2)
+          outer_vec[scale + n_fix] +=
+            2 * outer_res[id2 + id1 * n_mem] * scale_mat[id2 + id1 * n_mem];
+        outer_vec[scale + n_fix] +=
+          outer_res[id1 + id1 * n_mem] * scale_mat[id1 + id1 * n_mem];
+      }
+    }
 
     size_t const vec_outer_res_dim{n_fix + n_scales};
     double * const vec_outer_res{res_i + shift_vec_outer_res};
-    // TODO: exploit the symmetry and only store the triangular part
+    // TODO: get rid of this if we start working only the triangular part
+    std::fill
+      (vec_outer_res,
+       vec_outer_res + vec_outer_res_dim * vec_outer_res_dim, 0);
+
     for(size_t param1 = 0; param1 < vec_outer_res_dim; ++param1)
-      for(size_t param2 = 0; param2 < vec_outer_res_dim; ++param2)
+      for(size_t param2 = 0; param2 <= param1; ++param2){
         vec_outer_res[param2 + param1 * vec_outer_res_dim] =
           outer_vec[param1] * outer_vec[param2];
+      }
   }
 }
 
@@ -557,7 +1010,6 @@ void pedigree_l_factor_Hessian::univariate
   arma::uword const hess_dim{n_fix + n_scales};
   double * const hess_begin{out + 1 + hess_dim};
   std::fill(hess_begin, hess_begin + hess_dim * hess_dim, 0);
-
 
   auto add_to_hess = [&](double const limit, double const ratio,
                          bool const is_upper){
@@ -599,7 +1051,7 @@ void pedigree_l_factor_Hessian::univariate
   if(!f_lb)
     add_to_hess(lw, d_lb, false);
 
-   arma::mat hess(hess_begin, hess_dim, hess_dim, false);
+   arma::mat hess(hess_begin, hess_dim, hess_dim, false, true);
    hess = arma::symmatu(hess);
 }
 
@@ -620,6 +1072,17 @@ pedigree_l_factor_Hessian::out_type pedigree_l_factor_Hessian::get_output
     size_t const shift_scaled_res{1},
                  shift_outer_res{shift_scaled_res + n_mem},
                  shift_vec_outer_res{shift_outer_res + n_mem * n_mem};
+
+    {
+      // fill in the lower triangle
+      arma::mat outer_res
+                   (res + shift_outer_res, n_mem, n_mem, false);
+      outer_res = arma::symmatu(outer_res);
+
+      arma::mat vec_outer_res
+                   (res + shift_vec_outer_res, hess_dim, hess_dim, false);
+      vec_outer_res = arma::symmatu(vec_outer_res);
+    }
 
     out.sd_errs[0] = sdest[0] * norm_const;
     std::fill
@@ -643,8 +1106,8 @@ pedigree_l_factor_Hessian::out_type pedigree_l_factor_Hessian::get_output
          scale_mats_permu[scale], 0.);
 
     // compute the Hessian
-    arma::mat X_permu_mat(X_permu, n_mem, n_fix, false),
-             vcov_inv_mat(vcov_inv, n_mem, n_mem, false); // TODO: solve instead
+    arma::mat X_permu_mat(X_permu, n_mem, n_fix, false, true),
+             vcov_inv_mat(vcov_inv, n_mem, n_mem, false, true); // TODO: solve instead
 
     hess.resize(hess_dim, hess_dim);
     std::copy
@@ -660,13 +1123,13 @@ pedigree_l_factor_Hessian::out_type pedigree_l_factor_Hessian::get_output
       (X_permu_mat.t() * vcov_inv_mat * X_permu_mat) / rel_likelihood;
 
     {
-      arma::vec cross_vec(res + shift_scaled_res, n_mem, false);
+      arma::vec cross_vec(res + shift_scaled_res, n_mem, false, true);
       for(size_t scale = 0; scale < n_scales; ++scale)
         hess.submat(0, n_fix + scale, n_fix - 1, n_fix + scale) -=
           X_permu_mat.t() * vcov_inv_mat * scale_mats_arma[scale] * cross_vec;
     }
     {
-      arma::mat outer_vec(res + shift_outer_res, n_mem, n_mem, false);
+      arma::mat outer_vec(res + shift_outer_res, n_mem, n_mem, false, true);
       arma::mat prod1;
 
       for(size_t scale1 = 0; scale1 < n_scales; ++scale1){
@@ -806,7 +1269,7 @@ generic_l_factor::out_type generic_l_factor::get_output
 
     out.derivs.resize(n_vars * (n_vars + 1));
 
-    arma::vec d_mean(out.derivs.begin(), n_vars, false);
+    arma::vec d_mean(out.derivs.begin(), n_vars, false, true);
 
     {
       double const * const d_mean_permu{res + 1};
@@ -814,7 +1277,7 @@ generic_l_factor::out_type generic_l_factor::get_output
         d_mean[indices[v]] = d_mean_permu[v];
     }
 
-    arma::mat d_Sig(d_mean.end(), n_vars, n_vars, false);
+    arma::mat d_Sig(d_mean.end(), n_vars, n_vars, false, true);
 
     std::unique_ptr<double[]> Sig_permu_inv
       (new double[(n_vars * (n_vars + 1)) / 2]);
@@ -861,6 +1324,9 @@ cache_mem<double> pedigree_l_factor_Hessian::dmem;
 cache_mem<double> generic_l_factor::dmem;
 cache_mem<int> pedigree_l_factor::imem;
 
+template class cdf<likelihood>;
+template class cdf<pedigree_l_factor>;
 template class cdf<pedigree_l_factor_Hessian>;
+template class cdf<generic_l_factor>;
 
 } // namespace pedmod

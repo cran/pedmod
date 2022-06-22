@@ -74,10 +74,7 @@ some guess.}
 likelihood terms to include. Use \code{NULL} if all indices should be
 used.}
 
-\item{maxvls_start}{number of samples to use when finding the
-initial values for the optimization.}
-
-\item{minvls_start}{number of samples to use when finding the
+\item{maxvls_start, minvls_start}{number of samples to use when finding the
 initial values for the optimization.}
 
 \item{do_reorder}{\code{TRUE} if a heuristic variable reordering should
@@ -105,7 +102,7 @@ during the estimation of the profile likelihood curve.}
 either directions.}
 
 \item{use_tilting}{\code{TRUE} if the minimax tilting method suggested
-by Botev (2017). See \doi{10.1111/rssb.12162}.}
+by Botev (2017) should be used. See \doi{10.1111/rssb.12162}.}
 
 \item{vls_scales}{can be a numeric vector with a positive scalar for each
 cluster. Then \code{vls_scales[i] * minvls} and

@@ -28,6 +28,7 @@ pedmod_profile_prop(
   opt_func = NULL,
   use_tilting = FALSE,
   vls_scales = NULL,
+  bound = c(0.01, 0.99),
   ...
 )
 }
@@ -59,10 +60,7 @@ variance should be profiled.}
 likelihood terms to include. Use \code{NULL} if all indices should be
 used.}
 
-\item{maxvls_start}{number of samples to use when finding the
-initial values for the optimization.}
-
-\item{minvls_start}{number of samples to use when finding the
+\item{maxvls_start, minvls_start}{number of samples to use when finding the
 initial values for the optimization.}
 
 \item{do_reorder}{\code{TRUE} if a heuristic variable reordering should
@@ -94,13 +92,17 @@ either directions.}
 is \code{NULL}.}
 
 \item{use_tilting}{\code{TRUE} if the minimax tilting method suggested
-by Botev (2017). See \doi{10.1111/rssb.12162}.}
+by Botev (2017) should be used. See \doi{10.1111/rssb.12162}.}
 
 \item{vls_scales}{can be a numeric vector with a positive scalar for each
 cluster. Then \code{vls_scales[i] * minvls} and
 \code{vls_scales[i] * maxvls} is used for cluster \code{i} rather than
 \code{minvls} and \code{maxvls}. Set \code{vls_scales = NULL} if the latter
 should be used.}
+
+\item{bound}{boundaries for the limits of the proportion. Has to be in
+between \eqn{(0,1)}. This is useful particularly if the optimization fails to
+work on the default values.}
 
 \item{...}{arguments passed to \code{opt_func}.}
 }
