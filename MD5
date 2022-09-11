@@ -1,6 +1,6 @@
-c969dbdd668c2147a9b6c1d67089174e *DESCRIPTION
+6c6d7ccbfa325cb9b6cf5fad9b16dc9a *DESCRIPTION
 f125f75fe65916d9d922320072e8ea9d *NAMESPACE
-d4deff35cc65ec74e7a283edc28061d4 *NEWS.md
+770c4646219e5f1abd6a4de1da93867c *NEWS.md
 adb06055d36f77de2b07a195ba14db5a *R/RcppExports.R
 11133878a8a23a9b1d7d2c72cdd0344e *R/catch-routine-registration.R
 639d94ec98c2a68e69d35c1c8f98dbc9 *R/eval_wrappers.R
@@ -8,8 +8,8 @@ adb06055d36f77de2b07a195ba14db5a *R/RcppExports.R
 836b24ac635c74f6e84569a6206db4ce *R/opt.R
 3027753c86f762e98b7631ce9a44d27b *R/pedmod-package.R
 b0daa289450bacd19d22ea3363117204 *R/transform-parameters.R
-1961639f6f4f7f9efffa91b624b3d060 *build/partial.rdb
-5acd25a519adc16c3f697eb8ef1bd349 *build/vignette.rds
+0c6ad5b3446721162c89589e8077ab1c *build/partial.rdb
+f2d533b41403debf27d7c4f598de4d34 *build/vignette.rds
 9f7dc964949de8401716b6ccd82dbd37 *inst/doc/pedigree_partitioning.html
 0bbf6c5cb46fdf66c809976df0e3585b *inst/doc/pedigree_partitioning.html.asis
 48a7bfa90c4169922e301162f0079f40 *inst/doc/pedmod.html
@@ -31,7 +31,7 @@ b79a5df94af8ce4cd1b958843effc149 *man/standardized_to_direct.Rd
 95143998e69e715345cd9ecbe66cc644 *src/C_FORTRAN_interface.c
 923ea7172bd05c6523284e898c090b5f *src/Makevars
 185d5b3d22d2f274a188d0dee6f5d038 *src/RcppExports.cpp
-ad6ca1500ea924053ba7b92aa76881ee *src/arma-wrap.h
+2d8102ca104631bce3cb1f7eeddeb24f *src/arma-wrap.h
 3a009c4ee1d3e6b5538bd26859222182 *src/cdfaprx.cpp
 cc1a33df6e5b9dac14929bf581bef6ac *src/cdfaprx.h
 c6e5d756054220c1b4c61dfec1a7b535 *src/config.h
@@ -55,7 +55,7 @@ fb9199406abb785ae464a15dbc07b5a4 *src/qtnorm.h
 77b271b8296f8548fd2232adbf177f6c *src/r-api.cpp
 2bf5e6c5aff8ce040d445da7637fad11 *src/sobol.cpp
 283a162577d8eb112c6872ec12220997 *src/sobol.h
-d9c12eedd765538817ec50f5220f5a25 *src/test-cdfaprx.cpp
+533205b38227cb37de7c6f803d5eb817 *src/test-cdfaprx.cpp
 6db5594aa994300107ba4eb524573097 *src/test-find-tilting-param.cpp
 cacc2b1cf3ef045e3043c7c21c763cbf *src/test-pedigree-ll.cpp
 0f997a5c404e61e6f32b283550b4b6d2 *src/test-qtnorm.cpp
